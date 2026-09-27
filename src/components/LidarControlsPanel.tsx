@@ -61,6 +61,9 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
   onResetFilters
 }) => {
   const allClasses = Object.keys(metadata.classCounts).map(Number);
+  // Room scans are a few metres across and need far finer point sizes than city-scale clouds
+  const smallCloud =
+    metadata.format !== 'E57' && Math.max(metadata.bounds.sizeX, metadata.bounds.sizeY, metadata.bounds.sizeZ) < 30;
 
   const toggleClass = (code: number) => {
     const next = new Set(filterState.enabledClasses);
@@ -256,14 +259,14 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
               title="Point size"
               aside={
                 <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-                  {renderSettings.pointSize.toFixed(1)}
+                  {renderSettings.pointSize.toFixed(smallCloud ? 3 : 1)}
                 </span>
               }
             >
               <Slider
-                min={0.1}
-                max={4}
-                step={0.1}
+                min={smallCloud ? 0.004 : 0.1}
+                max={smallCloud ? 0.08 : 4}
+                step={smallCloud ? 0.001 : 0.1}
                 value={[renderSettings.pointSize]}
                 onValueChange={([v]) => onUpdateRenderSettings({ pointSize: v })}
               />
@@ -291,13 +294,32 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
                 )}
               </Section>
             ) : (
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">Scale with distance</span>
-                <Switch
-                  checked={renderSettings.sizeAttenuation}
-                  onCheckedChange={checked => onUpdateRenderSettings({ sizeAttenuation: checked })}
-                />
-              </div>
+              <>
+                <Section
+                  title="Walls & buildings opacity"
+                  aside={
+                    <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                      {Math.round((renderSettings.structureOpacity ?? 1) * 100)}%
+                    </span>
+                  }
+                >
+                  <Slider
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    value={[renderSettings.structureOpacity ?? 1]}
+                    onValueChange={([v]) => onUpdateRenderSettings({ structureOpacity: v })}
+                  />
+                </Section>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">Scale with distance</span>
+                  <Switch
+                    checked={renderSettings.sizeAttenuation}
+                    onCheckedChange={checked => onUpdateRenderSettings({ sizeAttenuation: checked })}
+                  />
+                </div>
+              </>
             )}
           </TabsContent>
         </div>

@@ -79,6 +79,8 @@ export interface LidarRenderSettings {
   edlStrength: number;
   invertColormap: boolean;
   backgroundColor: string;
+  /** Opacity of Building / Structure points (class 6); below 1 they render translucent, e.g. room walls. */
+  structureOpacity?: number;
 }
 
 export interface MeasurementPoint {
@@ -115,6 +117,7 @@ export type AgentActionType =
   | 'reset_filters'
   | 'measure_feature'
   | 'load_dataset'
+  | 'remove_object'
   | 'export_cloud';
 
 export interface AgentAction {
