@@ -16,8 +16,11 @@ export interface ScanDataset {
   recommendedColormap: ColormapType;
   /** World-space point size; scans are room-sized, so far smaller than the synthetic city presets. */
   pointSize: number;
-  /** Put the camera inside, at eye height in the middle of the room, instead of orbiting from outside. */
-  startInside: boolean;
+  /**
+   * Where the camera starts. 'front': the Front preset, pulled back until the room fills the viewport.
+   * 'inside': eye height in the middle of the room.
+   */
+  startView: 'front' | 'inside';
   /** Walls and ceiling (class 6) opacity, so the room can be seen through. */
   structureOpacity: number;
 }
@@ -31,7 +34,7 @@ export const SCAN_DATASETS: ScanDataset[] = [
     recommendedColorMode: 'rgb',
     recommendedColormap: 'viridis',
     pointSize: 0.018,
-    startInside: true,
+    startView: 'front',
     structureOpacity: 0.25
   }
 ];

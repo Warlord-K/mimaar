@@ -785,7 +785,7 @@ export default function App() {
               editingMode={editingMode}
               onChangeEditingMode={setEditingMode}
               captureRef={captureRef}
-              startInside={!!findScan(activePresetId)?.startInside}
+              startView={findScan(activePresetId)?.startView ?? 'orbit'}
             />
           )}
           {importStatus && (

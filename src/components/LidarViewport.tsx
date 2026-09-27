@@ -26,8 +26,11 @@ interface LidarViewportProps {
   onMeasurementChange?: (result: MeasurementResult | null) => void;
   /** Filled with a function that captures the current view (used by Photoreal Studio). */
   captureRef?: React.MutableRefObject<ViewportCaptureFn | null>;
-  /** Start at eye height in the middle of the cloud (room scans) rather than orbiting from outside. */
-  startInside?: boolean;
+  /**
+   * Where the camera starts for this cloud: 'orbit' is the default three-quarter view, 'front' a level
+   * front view fitted to fill the viewport, 'inside' eye height in the middle of a room scan.
+   */
+  startView?: 'orbit' | 'front' | 'inside';
 }
 
 export const LidarViewport: React.FC<LidarViewportProps> = ({
@@ -40,7 +43,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   onUpdateCropBox,
   onMeasurementChange,
   captureRef,
-  startInside = false
+  startView = 'orbit'
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -90,6 +93,26 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       target.z + radius * Math.cos(phi)
     );
     cameraRef.current?.lookAt(target);
+  };
+
+  /** Level front view (same angle as the Front preset), pulled back just far enough to fill the viewport. */
+  const placeFront = () => {
+    const b = metadata.bounds;
+    const orbit = orbitRef.current;
+    const el = containerRef.current;
+    const aspect = el && el.clientHeight > 0 ? el.clientWidth / el.clientHeight : 1;
+    const tanHalf = Math.tan(THREE.MathUtils.degToRad((cameraRef.current?.fov ?? 50) / 2));
+    // Looking along +Y, the near face of the cloud is sizeX wide and sizeZ tall
+    const fit = Math.max(b.sizeZ / 2 / tanHalf, b.sizeX / 2 / (tanHalf * aspect));
+    orbit.target.set(b.centerX, b.centerY, b.centerZ);
+    orbit.theta = 0;
+    orbit.phi = Math.PI / 2;
+    orbit.radius = fit * 1.06 + b.sizeY / 2;
+  };
+
+  const placeStartView = () => {
+    if (startView === 'front') placeFront();
+    else if (startView === 'inside') placeInside();
   };
 
   /** Eye height in the middle of the room, looking level toward the furniture rather than a bare wall. */
@@ -246,8 +269,10 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
     );
     orbitRef.current.target.copy(center);
     orbitRef.current.radius = fitRadius();
-    if (startInside) placeInside();
+    placeStartView();
     applyOrbit();
+    if (startView === 'front') setViewPreset('front');
+    else if (startView === 'inside') setViewPreset('free');
 
     // The grid was sized for city-scale clouds; shrink it to sit just under a room's floor
     const grid = sceneRef.current?.getObjectByName('lidar_grid');
@@ -504,7 +529,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
 
   const handleWheel = (e: React.WheelEvent) => {
     const zoomDelta = e.deltaY * 0.0015 * orbitRef.current.radius;
-    const minRadius = startInside ? 0.02 : Math.min(2.0, maxDimension() * 0.02);
+    const minRadius = startView === 'inside' ? 0.02 : Math.min(2.0, maxDimension() * 0.02);
     orbitRef.current.radius = Math.max(minRadius, Math.min(500, orbitRef.current.radius + zoomDelta));
 
     if (cameraRef.current) {
@@ -599,7 +624,8 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       orbit.radius = fitRadius();
       orbit.theta = Math.PI / 4;
       orbit.phi = Math.PI / 3.2;
-      if (startInside) placeInside();
+      placeStartView();
+      if (startView === 'front') setViewPreset('front');
     }
 
     if (cameraRef.current) {
