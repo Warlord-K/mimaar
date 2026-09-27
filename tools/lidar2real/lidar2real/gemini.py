@@ -47,7 +47,7 @@ def text_part(text: str) -> dict:
 
 class Gemini:
     def __init__(self, api_key: str | None = None, max_retries: int = 4):
-        # With api_key=None the SDK reads GEMINI_API_KEY / GOOGLE_API_KEY from the environment.
+        # With api_key=None the SDK reads GEMINI_KEY / GOOGLE_API_KEY from the environment.
         self.client = genai.Client(api_key=api_key)
         self.max_retries = max_retries
 

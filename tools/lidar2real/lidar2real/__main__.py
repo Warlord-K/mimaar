@@ -75,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     load_dotenv()
-    if not args.dry_run and not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
-        parser.error("GEMINI_API_KEY is not set: copy .env.example to .env and add your key (or use --dry-run)")
+    if not args.dry_run and not (os.environ.get("GEMINI_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        parser.error("GEMINI_KEY is not set: copy .env.example to .env and add your key (or use --dry-run)")
     if not args.input.exists():
         parser.error(f"{args.input} does not exist")
 

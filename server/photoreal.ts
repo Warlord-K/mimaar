@@ -202,9 +202,9 @@ function textPart(text: string) {
 }
 
 function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_KEY;
   if (!apiKey) {
-    throw new HttpError(503, 'GEMINI_API_KEY is not configured on the server, so photoreal rendering is unavailable.');
+    throw new HttpError(503, 'GEMINI_KEY is not configured on the server, so photoreal rendering is unavailable.');
   }
   return new GoogleGenAI({ apiKey });
 }
@@ -287,7 +287,7 @@ export function createPhotorealRouter(authenticate: RequestHandler): Router {
   // GET /api/v1/photoreal/config - models, options and whether a Gemini key is configured
   router.get('/config', (_req, res) => {
     res.json({
-      enabled: !!process.env.GEMINI_API_KEY,
+      enabled: !!process.env.GEMINI_KEY,
       models: { image: IMAGE_MODEL, video: VIDEO_MODEL, describe: TEXT_MODEL },
       imageSizes: IMAGE_SIZES,
       videoResolutions: VIDEO_RESOLUTIONS,

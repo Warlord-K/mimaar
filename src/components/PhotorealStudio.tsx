@@ -87,7 +87,7 @@ export const PhotorealStudio: React.FC<PhotorealStudioProps> = ({ photoreal }) =
             <span>
               {configError
                 ? `Photoreal service unreachable: ${configError}`
-                : 'GEMINI_API_KEY is not set on the server. Add it in the AI Studio Secrets panel (or .env locally) to render.'}
+                : 'GEMINI_KEY is not set on the server. Add it in the AI Studio Secrets panel (or .env locally) to render.'}
             </span>
           </p>
         )}
