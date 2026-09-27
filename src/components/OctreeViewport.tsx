@@ -7,8 +7,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { RotateCcw, Ruler, Loader2 } from 'lucide-react';
+import { Focus, Loader2, Move3d, Ruler, X } from 'lucide-react';
 import { LidarFilterState, LidarMetadata, LidarRenderSettings, EditingMode } from '../types/lidar';
+import { ViewportCaptureFn } from '../types/photoreal';
+import { Button } from '@/components/ui/button';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { cn } from '@/lib/utils';
 import { sampleColormap } from '../utils/colormaps';
 import { OctreeHierarchy, StreamingPointCloud } from '../utils/octree';
 
@@ -19,6 +23,9 @@ interface OctreeViewportProps {
   filterState: LidarFilterState;
   renderSettings: LidarRenderSettings;
   editingMode: EditingMode;
+  onChangeEditingMode: (mode: EditingMode) => void;
+  /** Filled with a function that captures the current view (used by Photoreal Studio). */
+  captureRef?: React.MutableRefObject<ViewportCaptureFn | null>;
 }
 
 const POINT_VERT = /* glsl */ `
@@ -160,7 +167,9 @@ export const OctreeViewport: React.FC<OctreeViewportProps> = ({
   metadata,
   filterState,
   renderSettings,
-  editingMode
+  editingMode,
+  onChangeEditingMode,
+  captureRef
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -172,10 +181,12 @@ export const OctreeViewport: React.FC<OctreeViewportProps> = ({
     material: THREE.ShaderMaterial;
     edl: THREE.ShaderMaterial;
     requestRender: () => void;
+    renderFrame: () => void;
     frame: (preset: 'reset' | 'top' | 'front' | 'side') => void;
   } | null>(null);
   const [stats, setStats] = useState({ points: 0, nodes: 0, loading: 0 });
   const [measure, setMeasure] = useState<{ a: THREE.Vector3; b?: THREE.Vector3 } | null>(null);
+  const [viewPreset, setViewPreset] = useState<'top' | 'front' | 'side' | ''>('');
   const measureLine = useRef<THREE.Line | null>(null);
 
   // Scene setup, once per cloud
@@ -309,7 +320,8 @@ export const OctreeViewport: React.FC<OctreeViewportProps> = ({
     };
     loop();
 
-    ctx.current = { renderer, camera, controls, cloud, material, edl, requestRender, frame };
+    controls.addEventListener('start', () => setViewPreset(''));
+    ctx.current = { renderer, camera, controls, cloud, material, edl, requestRender, renderFrame, frame };
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
@@ -380,6 +392,30 @@ export const OctreeViewport: React.FC<OctreeViewportProps> = ({
     if (editingMode !== 'measure') setMeasure(null);
   }, [editingMode]);
 
+  // Capture for Photoreal Studio: render a frame without the measurement line and grab it
+  useEffect(() => {
+    if (!captureRef) return;
+    captureRef.current = (maxSide = 1536) => {
+      const c = ctx.current;
+      if (!c) return null;
+      const line = measureLine.current;
+      if (line) line.visible = false;
+      c.renderFrame();
+      const src = c.renderer.domElement;
+      const scale = Math.min(1, maxSide / Math.max(src.width, src.height));
+      const out = document.createElement('canvas');
+      out.width = Math.round(src.width * scale);
+      out.height = Math.round(src.height * scale);
+      out.getContext('2d')?.drawImage(src, 0, 0, out.width, out.height);
+      if (line) line.visible = true;
+      c.requestRender();
+      return { dataUrl: out.toDataURL('image/png'), width: out.width, height: out.height };
+    };
+    return () => {
+      captureRef.current = null;
+    };
+  }, [captureRef]);
+
   // Double-click re-centres the orbit on the clicked point; in measure mode clicks pick points
   const pickAt = (e: React.MouseEvent) => {
     const c = ctx.current;
@@ -418,70 +454,92 @@ export const OctreeViewport: React.FC<OctreeViewportProps> = ({
       })()
     : null;
 
+  const overlay = 'rounded-lg border bg-background/80 backdrop-blur-md shadow-sm';
+
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden select-none" onContextMenu={e => e.preventDefault()}>
+    <div ref={containerRef} className="relative h-full w-full touch-none overflow-hidden select-none" onContextMenu={e => e.preventDefault()}>
       <canvas
         ref={canvasRef}
         onDoubleClick={onDoubleClick}
         onClick={onClick}
-        className={`w-full h-full block ${editingMode === 'measure' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}`}
+        className={cn('block h-full w-full', editingMode === 'measure' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing')}
       />
 
-      <div className="absolute top-3 left-3 flex items-center gap-1.5 z-10">
-        <div className="flex items-center bg-[#1a1c24]/90 backdrop-blur border border-[#2e3140] rounded-md px-1.5 py-1 text-xs text-gray-300 gap-1 shadow-lg font-mono">
-          {(['top', 'front', 'side'] as const).map(p => (
-            <button
-              key={p}
-              onClick={() => ctx.current?.frame(p)}
-              className="px-2 py-0.5 rounded text-[11px] hover:bg-[#2c303f] text-gray-400 hover:text-white transition-colors"
-            >
-              {p === 'top' ? 'Top (Map)' : p === 'front' ? 'Front' : 'Side'}
-            </button>
-          ))}
-          <div className="h-3 w-px bg-gray-700" />
-          <button
-            onClick={() => ctx.current?.frame('reset')}
-            title="Reset view"
-            className="p-1 hover:bg-[#2c303f] text-gray-400 hover:text-white rounded"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        {editingMode === 'measure' && (
-          <div className="flex items-center gap-1.5 bg-[#e87d0d]/20 border border-[#e87d0d]/50 text-[#e87d0d] px-2.5 py-1 rounded-md text-xs font-medium backdrop-blur">
-            <Ruler className="w-3.5 h-3.5" />
-            <span>Click 2 points to measure</span>
-          </div>
-        )}
+      <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2">
+        <ToggleGroup
+          type="single"
+          size="sm"
+          className={cn(overlay, 'p-0.5')}
+          value={editingMode}
+          onValueChange={v => v && onChangeEditingMode(v as EditingMode)}
+        >
+          <ToggleGroupItem value="navigate" aria-label="Orbit">
+            <Move3d />
+            <span className="hidden sm:inline">Orbit</span>
+          </ToggleGroupItem>
+          <ToggleGroupItem value="measure" aria-label="Measure">
+            <Ruler />
+            <span className="hidden sm:inline">Measure</span>
+          </ToggleGroupItem>
+        </ToggleGroup>
+
+        <ToggleGroup
+          type="single"
+          size="sm"
+          className={cn(overlay, 'p-0.5')}
+          value={viewPreset}
+          onValueChange={v => {
+            if (!v) return;
+            setViewPreset(v as 'top' | 'front' | 'side');
+            ctx.current?.frame(v as 'top' | 'front' | 'side');
+          }}
+        >
+          <ToggleGroupItem value="top" className="px-2 text-xs">Top</ToggleGroupItem>
+          <ToggleGroupItem value="front" className="px-2 text-xs">Front</ToggleGroupItem>
+          <ToggleGroupItem value="side" className="px-2 text-xs">Side</ToggleGroupItem>
+        </ToggleGroup>
+
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          className={overlay}
+          onClick={() => {
+            setViewPreset('');
+            ctx.current?.frame('reset');
+          }}
+          aria-label="Reset camera"
+        >
+          <Focus />
+        </Button>
       </div>
 
-      {m && (
-        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-[#1b1d28]/95 backdrop-blur border border-amber-500/50 rounded-xl px-4 py-2.5 text-xs shadow-2xl flex items-center gap-4 z-20 font-mono">
-          <span className="text-amber-400 font-bold">3D: {m.d3.toFixed(3)} m</span>
-          <span className="text-gray-300">Horizontal: {m.horiz.toFixed(3)} m</span>
-          <span className="text-gray-300">ΔZ: {m.dz.toFixed(3)} m</span>
-          <span className="text-gray-300">Slope: {m.slope.toFixed(1)}%</span>
-          <button onClick={() => setMeasure(null)} className="text-gray-400 hover:text-white underline">Clear</button>
+      {editingMode === 'measure' && !m && (
+        <div className={cn(overlay, 'absolute bottom-14 left-1/2 z-10 -translate-x-1/2 px-3 py-1.5 text-xs text-muted-foreground whitespace-nowrap')}>
+          Click two points to measure
         </div>
       )}
 
-      <div className="absolute bottom-3 left-3 text-[11px] font-mono text-gray-400 bg-[#161820]/90 backdrop-blur px-3 py-1.5 rounded-lg border border-[#2b2e3d] pointer-events-none space-y-0.5 z-10 shadow-lg">
-        <div className="flex items-center gap-2 text-gray-200 font-semibold">
-          {stats.loading > 0 ? (
-            <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
-          ) : (
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          )}
-          <span>Rendered: {stats.points.toLocaleString()} pts</span>
-          <span className="text-gray-600">/</span>
-          <span className="text-gray-400">{metadata.pointCount.toLocaleString()} total</span>
+      {m && (
+        <div className={cn(overlay, 'absolute bottom-14 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 px-3 py-2 font-mono text-xs tabular-nums whitespace-nowrap')}>
+          <span className="font-semibold text-primary">{m.d3.toFixed(3)} m</span>
+          <span className="text-muted-foreground">ΔZ {m.dz > 0 ? '+' : ''}{m.dz.toFixed(3)} m</span>
+          <span className="hidden text-muted-foreground sm:inline">slope {m.slope.toFixed(1)}%</span>
+          <Button size="icon-xs" variant="ghost" onClick={() => setMeasure(null)} aria-label="Clear measurement">
+            <X />
+          </Button>
         </div>
-        <div className="text-[10px] text-gray-500 flex items-center gap-2">
-          <span>Streaming LOD · {stats.nodes} nodes{stats.loading > 0 ? ` · loading ${stats.loading}` : ''}</span>
-          <span>·</span>
-          <span>{metadata.bounds.sizeX.toFixed(1)} × {metadata.bounds.sizeY.toFixed(1)} m</span>
-        </div>
-        <div className="text-[10px] text-gray-600">Drag orbit · Right-drag pan · Scroll zoom to cursor · Double-click to focus</div>
+      )}
+
+      <div className={cn(overlay, 'pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-2 px-2.5 py-1 font-mono text-[11px] text-muted-foreground tabular-nums')}>
+        {stats.loading > 0 ? <Loader2 className="size-3 animate-spin text-primary" /> : <span className="size-1.5 rounded-full bg-primary" />}
+        <span className="text-foreground">{stats.points.toLocaleString()}</span>
+        <span>/ {metadata.pointCount.toLocaleString()} pts</span>
+        <span className="hidden sm:inline">· streaming {stats.nodes} tiles</span>
+        <span className="hidden md:inline">· {metadata.bounds.sizeX.toFixed(0)} × {metadata.bounds.sizeY.toFixed(0)} m</span>
+      </div>
+
+      <div className={cn(overlay, 'pointer-events-none absolute right-3 bottom-3 z-10 hidden px-2.5 py-1 text-[11px] text-muted-foreground lg:block')}>
+        Drag orbit · Right-drag pan · Scroll zoom · Double-click focus
       </div>
     </div>
   );

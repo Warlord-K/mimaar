@@ -8,6 +8,7 @@ import os from 'os';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { createCloudRouter } from './server/clouds';
+import { createPhotorealRouter } from './server/photoreal';
 
 dotenv.config();
 
@@ -274,7 +275,7 @@ You MUST respond with a strict JSON object (NO markdown backticks, NO markdown f
 }`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
       contents: [systemPrompt]
     });
 
@@ -315,6 +316,27 @@ function generateLocalFallbackReply(message: string, sceneSummary: any) {
     });
     reply = `Ground points (ASPRS Class 2) have been removed from view. The remaining points display tree canopies, power transmission lines, and structural facades.`;
     suggested.push('Color by elevation with Turbo', 'Isolate buildings only', 'Reset filters');
+  } else if (lower.includes('vegetation') || lower.includes('tree')) {
+    actions.push({
+      id: `act_${Date.now()}`,
+      type: 'isolate_vegetation',
+      label: 'Isolate Vegetation',
+      parameters: {},
+      explanation: 'Kept low, medium and high vegetation (Classes 3-5).'
+    });
+    reply = `Showing vegetation only (low, medium and high canopy).`;
+    suggested.push('Color by elevation with Turbo', 'Reset filters');
+  } else if (lower.includes('decimate') || lower.includes('downsample') || lower.includes('50%')) {
+    const rate = lower.includes('10%') ? 0.1 : lower.includes('25%') ? 0.25 : 0.5;
+    actions.push({
+      id: `act_${Date.now()}`,
+      type: 'decimate',
+      label: `Decimate to ${rate * 100}%`,
+      parameters: { rate },
+      explanation: `Downsampled the rendered cloud to ${rate * 100}% density.`
+    });
+    reply = `Rendering ${rate * 100}% of points for faster interaction.`;
+    suggested.push('Reset filters', 'Remove noise');
   } else if (lower.includes('building')) {
     actions.push({
       id: `act_${Date.now()}`,
@@ -370,7 +392,7 @@ function generateLocalFallbackReply(message: string, sceneSummary: any) {
     });
     reply = `All filters and ROI slices have been reset. The complete point cloud is displayed.`;
     suggested.push('Strip ground points', 'Analyze survey metrics');
-  } else if (lower.includes('density') || lower.includes('count') || lower.includes('metric') || lower.includes('stat')) {
+  } else if (lower.includes('density') || lower.includes('count') || lower.includes('metric') || lower.includes('stat') || lower.includes('summar')) {
     reply = `Point cloud survey analysis:\n- **Total Point Count:** ${(sceneSummary.pointCount || 38500).toLocaleString()} pts\n- **Point Density:** ${sceneSummary.densityPerSqMeter || 3.85} pts/m²\n- **Z Elevation Range:** ${sceneSummary.elevationRange ? sceneSummary.elevationRange.join('m to ') + 'm' : 'Full range'}\n- **Shading Mode:** ${sceneSummary.colorMode || 'classification'}`;
     suggested.push('Strip ground points', 'Clean noise outliers', 'Decimate to 50%');
   } else {
@@ -411,7 +433,9 @@ app.get(['/api/v1/status', '/api/status', '/api/v1/health', '/health'], (req, re
       'LIDAR_XYZ_PARSER',
       'LIDAR_E57_INGEST',
       'ASPRS_CLASSIFICATION_ENGINE',
-      'AGENTIC_LLM_INTEGRATION'
+      'AGENTIC_LLM_INTEGRATION',
+      'PHOTOREAL_RENDER_NANO_BANANA_2',
+      'VIDEO_GENERATION_GEMINI_OMNI'
     ],
     authenticated: !!(req as any).apiKeyInfo
   });
@@ -464,7 +488,12 @@ app.delete('/api/v1/auth/keys/:id', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 4. Point Cloud Ingest (E57 upload -> conversion -> viewer)
+// 4. Photoreal Rendering (Nano Banana 2) & Video (Gemini Omni)
+// -------------------------------------------------------------
+app.use('/api/v1/photoreal', createPhotorealRouter(authenticateApiKey));
+
+// -------------------------------------------------------------
+// 5. Point Cloud Ingest (E57 / databag upload -> streaming octree)
 // -------------------------------------------------------------
 app.use('/api/v1/clouds', createCloudRouter(authenticateApiKey));
 

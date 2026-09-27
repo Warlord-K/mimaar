@@ -5,10 +5,18 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'absolute-og-urls',
+        transformIndexHtml: html =>
+          html.replaceAll('content="/og-image.png"', `content="${(process.env.APP_URL ?? '').replace(/\/$/, '')}/og-image.png"`),
+      },
+    ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(__dirname, './src'),
       },
     },
     server: {

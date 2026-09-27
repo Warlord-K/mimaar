@@ -1,0 +1,4 @@
+google-genai>=2.25
+pillow>=10
+python-dotenv>=1.0
+imageio-ffmpeg>=0.5  # bundled ffmpeg, used to join clips; skip if ffmpeg is already installed
