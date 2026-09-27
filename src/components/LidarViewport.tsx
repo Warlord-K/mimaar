@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
   LidarPoint,
@@ -9,19 +9,10 @@ import {
   EditingMode
 } from '../types/lidar';
 import { sampleColormap, getClassificationColor } from '../utils/colormaps';
-import {
-  Compass,
-  Maximize2,
-  Eye,
-  Ruler,
-  Box,
-  Layers,
-  Camera,
-  Grid,
-  RotateCcw,
-  Sparkles,
-  Sliders
-} from 'lucide-react';
+import { Focus, Move3d, Ruler, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { cn } from '@/lib/utils';
 
 interface LidarViewportProps {
   points: LidarPoint[];
@@ -29,6 +20,7 @@ interface LidarViewportProps {
   filterState: LidarFilterState;
   renderSettings: LidarRenderSettings;
   editingMode: EditingMode;
+  onChangeEditingMode: (mode: EditingMode) => void;
   onUpdateCropBox?: (min: [number, number, number], max: [number, number, number]) => void;
   onMeasurementChange?: (result: MeasurementResult | null) => void;
 }
@@ -39,6 +31,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   filterState,
   renderSettings,
   editingMode,
+  onChangeEditingMode,
   onUpdateCropBox,
   onMeasurementChange
 }) => {
@@ -55,8 +48,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   // Visible point count state for HUD
   const [renderedCount, setRenderedCount] = useState<number>(0);
   const [measurementHud, setMeasurementHud] = useState<MeasurementResult | null>(null);
-  const [isOrthoView, setIsOrthoView] = useState<boolean>(false);
-  const [viewPreset, setViewPreset] = useState<'free' | 'top' | 'front' | 'side'>('free');
+    const [viewPreset, setViewPreset] = useState<'free' | 'top' | 'front' | 'side'>('free');
 
   // Orbit & Pan State
   const isDraggingRef = useRef<boolean>(false);
@@ -71,6 +63,13 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
 
   // Measurement pick state
   const measurementPointsRef = useRef<THREE.Vector3[]>([]);
+
+  const fitRadius = () => {
+    const maxDim = Math.max(metadata.bounds.sizeX, metadata.bounds.sizeY, metadata.bounds.sizeZ);
+    const el = containerRef.current;
+    const aspect = el && el.clientHeight > 0 ? el.clientWidth / el.clientHeight : 1;
+    return Math.max(30, (maxDim * 1.25) / Math.min(1, aspect));
+  };
 
   // Initialize Three.js
   useEffect(() => {
@@ -90,15 +89,16 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
     rendererRef.current = renderer;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(renderSettings.backgroundColor || '#111217');
+    scene.background = new THREE.Color('#0c0c0f');
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 2000);
     cameraRef.current = camera;
 
     // Ground Reference Grid
-    const grid = new THREE.GridHelper(120, 24, 0x484d60, 0x242733);
-    grid.position.y = metadata.bounds.minZ - 0.5;
+    const grid = new THREE.GridHelper(120, 24, 0x2a2a31, 0x18181c);
+    grid.rotation.x = Math.PI / 2;
+    grid.position.set(metadata.bounds.centerX, metadata.bounds.centerY, metadata.bounds.minZ - 0.5);
     grid.name = 'lidar_grid';
     scene.add(grid);
 
@@ -109,8 +109,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       metadata.bounds.centerZ
     );
     orbitRef.current.target.copy(center);
-    const maxDim = Math.max(metadata.bounds.sizeX, metadata.bounds.sizeY, metadata.bounds.sizeZ);
-    orbitRef.current.radius = Math.max(30, maxDim * 1.5);
+    orbitRef.current.radius = fitRadius();
 
     const updateCamera = () => {
       if (!cameraRef.current) return;
@@ -142,11 +141,12 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       cameraRef.current.updateProjectionMatrix();
       rendererRef.current.setSize(w, h);
     };
-    window.addEventListener('resize', handleResize);
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(containerRef.current);
 
     return () => {
       cancelAnimationFrame(animId);
-      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
       renderer.dispose();
     };
   }, []);
@@ -154,7 +154,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   // Update Background Color
   useEffect(() => {
     if (sceneRef.current) {
-      sceneRef.current.background = new THREE.Color(renderSettings.backgroundColor || '#111217');
+      sceneRef.current.background = new THREE.Color('#0c0c0f');
     }
   }, [renderSettings.backgroundColor]);
 
@@ -167,8 +167,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       metadata.bounds.centerZ
     );
     orbitRef.current.target.copy(center);
-    const maxDim = Math.max(metadata.bounds.sizeX, metadata.bounds.sizeY, metadata.bounds.sizeZ);
-    orbitRef.current.radius = Math.max(30, maxDim * 1.4);
+    orbitRef.current.radius = fitRadius();
 
     const { theta, phi, radius, target } = orbitRef.current;
     cameraRef.current.position.set(
@@ -338,24 +337,24 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   }, [filterState.cropBoxEnabled, filterState.cropBoxMin, filterState.cropBoxMax]);
 
   // Handle Mouse Click & Drag
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handleMouseDown = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement) !== canvasRef.current) return;
+    canvasRef.current?.setPointerCapture(e.pointerId);
     if (editingMode === 'measure' && e.button === 0) {
       // Pick 3D point for measurement
       handlePickMeasurementPoint(e);
       return;
     }
 
-    if (e.button === 0) {
-      // Left click orbit
-      isDraggingRef.current = true;
-    } else if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) {
-      // Pan
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) {
       isPanningRef.current = true;
+    } else if (e.button === 0) {
+      isDraggingRef.current = true;
     }
     lastMousePosRef.current = { x: e.clientX, y: e.clientY };
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMove = (e: React.PointerEvent) => {
     const deltaX = e.clientX - lastMousePosRef.current.x;
     const deltaY = e.clientY - lastMousePosRef.current.y;
     lastMousePosRef.current = { x: e.clientX, y: e.clientY };
@@ -411,7 +410,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   };
 
   // 3D Measurement Raycast Pick
-  const handlePickMeasurementPoint = (e: React.MouseEvent) => {
+  const handlePickMeasurementPoint = (e: React.PointerEvent) => {
     if (!containerRef.current || !cameraRef.current || !pointsMeshRef.current || !sceneRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -489,8 +488,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       orbit.phi = Math.PI / 2; // side cross-section
     } else if (preset === 'reset') {
       orbit.target.set(metadata.bounds.centerX, metadata.bounds.centerY, metadata.bounds.centerZ);
-      const maxDim = Math.max(metadata.bounds.sizeX, metadata.bounds.sizeY, metadata.bounds.sizeZ);
-      orbit.radius = Math.max(30, maxDim * 1.4);
+      orbit.radius = fitRadius();
       orbit.theta = Math.PI / 4;
       orbit.phi = Math.PI / 3.2;
     }
@@ -504,174 +502,126 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
     }
   };
 
+  const clearMeasurement = () => {
+    setMeasurementHud(null);
+    measurementPointsRef.current = [];
+    if (measurementLineRef.current && sceneRef.current) {
+      sceneRef.current.remove(measurementLineRef.current);
+      measurementLineRef.current = null;
+    }
+  };
+
+  const legendGradient =
+    renderSettings.colormap === 'viridis'
+      ? 'linear-gradient(to right, #440154, #3b528b, #21908d, #5dc863, #fde725)'
+      : renderSettings.colormap === 'turbo'
+      ? 'linear-gradient(to right, #30123b, #4582ec, #32d667, #e1dc32, #d13008)'
+      : renderSettings.colormap === 'terrain'
+      ? 'linear-gradient(to right, #267340, #59b34d, #b3a626, #bfa640, #ffffff)'
+      : renderSettings.colormap === 'plasma'
+      ? 'linear-gradient(to right, #0d0887, #7e03a8, #cc4778, #f89540, #f0f921)'
+      : 'linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)';
+
+  const overlay = 'rounded-lg border bg-background/80 backdrop-blur-md shadow-sm';
+
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full bg-[#111217] overflow-hidden select-none outline-none"
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
+      className="relative h-full w-full touch-none overflow-hidden bg-[#0c0c0f] select-none outline-none"
+      onPointerDown={handleMouseDown}
+      onPointerMove={handleMouseMove}
+      onPointerUp={handleMouseUp}
+      onPointerCancel={handleMouseUp}
       onWheel={handleWheel}
       onContextMenu={e => e.preventDefault()}
     >
-      {/* 3D WebGL Canvas */}
       <canvas
         ref={canvasRef}
-        className={`w-full h-full block ${
+        className={cn(
+          'block h-full w-full',
           editingMode === 'measure' ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
-        }`}
+        )}
       />
 
-      {/* Top Left: Orthographic / Presets Bar */}
-      <div className="absolute top-3 left-3 flex items-center gap-1.5 z-10">
-        <div className="flex items-center bg-[#1a1c24]/90 backdrop-blur border border-[#2e3140] rounded-md px-1.5 py-1 text-xs text-gray-300 gap-1 shadow-lg font-mono">
-          <button
-            onClick={() => setCameraPreset('top')}
-            title="Map View (Overhead Top)"
-            className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-              viewPreset === 'top' ? 'bg-[#3b82f6] text-white' : 'hover:bg-[#2c303f] text-gray-400'
-            }`}
-          >
-            Top (Map)
-          </button>
-          <button
-            onClick={() => setCameraPreset('front')}
-            title="Front Elevation Profile"
-            className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-              viewPreset === 'front' ? 'bg-[#3b82f6] text-white' : 'hover:bg-[#2c303f] text-gray-400'
-            }`}
-          >
-            Profile (Front)
-          </button>
-          <button
-            onClick={() => setCameraPreset('side')}
-            title="Side Section"
-            className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-              viewPreset === 'side' ? 'bg-[#3b82f6] text-white' : 'hover:bg-[#2c303f] text-gray-400'
-            }`}
-          >
-            Side
-          </button>
-          <div className="h-3 w-px bg-gray-700" />
-          <button
-            onClick={() => setCameraPreset('reset')}
-            title="Reset View to Cloud Center"
-            className="p-1 hover:bg-[#2c303f] text-gray-400 hover:text-white rounded"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2">
+        <ToggleGroup
+          type="single"
+          size="sm"
+          className={cn(overlay, 'p-0.5')}
+          value={editingMode}
+          onValueChange={v => v && onChangeEditingMode(v as EditingMode)}
+        >
+          <ToggleGroupItem value="navigate" aria-label="Orbit">
+            <Move3d />
+            <span className="hidden sm:inline">Orbit</span>
+          </ToggleGroupItem>
+          <ToggleGroupItem value="measure" aria-label="Measure">
+            <Ruler />
+            <span className="hidden sm:inline">Measure</span>
+          </ToggleGroupItem>
+        </ToggleGroup>
 
-        {/* Active Tool Badge */}
-        {editingMode === 'measure' && (
-          <div className="flex items-center gap-1.5 bg-[#e87d0d]/20 border border-[#e87d0d]/50 text-[#e87d0d] px-2.5 py-1 rounded-md text-xs font-medium backdrop-blur">
-            <Ruler className="w-3.5 h-3.5" />
-            <span>Click 2 points to measure 3D distance & slope</span>
-          </div>
-        )}
+        <ToggleGroup
+          type="single"
+          size="sm"
+          className={cn(overlay, 'p-0.5')}
+          value={viewPreset}
+          onValueChange={v => v && setCameraPreset(v as 'top' | 'front' | 'side')}
+        >
+          <ToggleGroupItem value="top" className="px-2 text-xs">Top</ToggleGroupItem>
+          <ToggleGroupItem value="front" className="px-2 text-xs">Front</ToggleGroupItem>
+          <ToggleGroupItem value="side" className="px-2 text-xs">Side</ToggleGroupItem>
+        </ToggleGroup>
 
-        {filterState.cropBoxEnabled && (
-          <div className="flex items-center gap-1.5 bg-[#00f0ff]/15 border border-[#00f0ff]/40 text-[#00f0ff] px-2.5 py-1 rounded-md text-xs font-medium backdrop-blur">
-            <Box className="w-3.5 h-3.5" />
-            <span>ROI Box Crop Active</span>
-          </div>
-        )}
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          className={overlay}
+          onClick={() => setCameraPreset('reset')}
+          aria-label="Reset camera"
+        >
+          <Focus />
+        </Button>
       </div>
 
-      {/* Top Right: Colormap Legend */}
-      <div className="absolute top-3 right-3 z-10 flex flex-col items-end gap-2">
-        {renderSettings.colorMode === 'elevation' && (
-          <div className="bg-[#181922]/90 backdrop-blur border border-[#2d3040] rounded-lg p-2.5 text-xs shadow-xl w-44">
-            <div className="flex items-center justify-between text-[11px] text-gray-400 font-mono mb-1">
-              <span>Elevation (Z)</span>
-              <span className="text-amber-400 font-bold uppercase">{renderSettings.colormap}</span>
-            </div>
-            {/* Color Gradient Strip */}
-            <div
-              className="h-3 rounded w-full border border-gray-700 shadow-inner"
-              style={{
-                background:
-                  renderSettings.colormap === 'viridis'
-                    ? 'linear-gradient(to right, #440154, #3b528b, #21908d, #5dc863, #fde725)'
-                    : renderSettings.colormap === 'turbo'
-                    ? 'linear-gradient(to right, #30123b, #4582ec, #32d667, #e1dc32, #d13008)'
-                    : renderSettings.colormap === 'terrain'
-                    ? 'linear-gradient(to right, #267340, #59b34d, #b3a626, #bfa640, #ffffff)'
-                    : 'linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)'
-              }}
-            />
-            <div className="flex items-center justify-between text-[10px] text-gray-400 font-mono mt-1">
-              <span>{metadata.bounds.minZ.toFixed(1)}m</span>
-              <span>{((metadata.bounds.minZ + metadata.bounds.maxZ) / 2).toFixed(1)}m</span>
-              <span>{metadata.bounds.maxZ.toFixed(1)}m</span>
-            </div>
+      {renderSettings.colorMode === 'elevation' && (
+        <div className={cn(overlay, 'absolute top-3 right-3 z-10 hidden w-40 p-2.5 sm:block')}>
+          <div className="mb-1.5 flex justify-between text-[11px] text-muted-foreground">
+            <span>Elevation</span>
+            <span className="capitalize">{renderSettings.colormap}</span>
           </div>
-        )}
-
-        {renderSettings.colorMode === 'intensity' && (
-          <div className="bg-[#181922]/90 backdrop-blur border border-[#2d3040] rounded-lg p-2 text-xs shadow-xl w-36">
-            <div className="text-[11px] text-gray-400 font-mono mb-1">Laser Intensity</div>
-            <div className="h-2.5 rounded w-full bg-gradient-to-r from-black to-white border border-gray-700" />
-            <div className="flex justify-between text-[10px] text-gray-500 font-mono mt-0.5">
-              <span>{metadata.intensityRange[0]}</span>
-              <span>{metadata.intensityRange[1]}</span>
-            </div>
+          <div className="h-1.5 w-full rounded-full" style={{ background: legendGradient }} />
+          <div className="mt-1.5 flex justify-between font-mono text-[10px] text-muted-foreground tabular-nums">
+            <span>{metadata.bounds.minZ.toFixed(1)} m</span>
+            <span>{metadata.bounds.maxZ.toFixed(1)} m</span>
           </div>
-        )}
-      </div>
-
-      {/* Bottom Center: Measurement HUD Callout */}
-      {measurementHud && (
-        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-[#1b1d28]/95 backdrop-blur border border-amber-500/50 rounded-xl px-4 py-2.5 text-xs shadow-2xl flex items-center gap-5 z-20 font-mono">
-          <div className="flex items-center gap-2 text-amber-400 font-bold border-r border-[#303348] pr-4">
-            <Ruler className="w-4 h-4" />
-            <span>3D Distance: {measurementHud.distance3D} m</span>
-          </div>
-          <div className="flex items-center gap-4 text-gray-300 text-[11px]">
-            <div>
-              <span className="text-gray-500">Horizontal: </span>
-              <span className="text-gray-200">{measurementHud.distanceHorizontal} m</span>
-            </div>
-            <div>
-              <span className="text-gray-500">ΔZ Height: </span>
-              <span className={measurementHud.deltaZ >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                {measurementHud.deltaZ > 0 ? `+${measurementHud.deltaZ}` : measurementHud.deltaZ} m
-              </span>
-            </div>
-            <div>
-              <span className="text-gray-500">Slope: </span>
-              <span className="text-amber-300">{measurementHud.slopePercent}%</span>
-            </div>
-          </div>
-          <button
-            onClick={() => {
-              setMeasurementHud(null);
-              measurementPointsRef.current = [];
-              if (measurementLineRef.current && sceneRef.current) {
-                sceneRef.current.remove(measurementLineRef.current);
-                measurementLineRef.current = null;
-              }
-            }}
-            className="text-gray-400 hover:text-white text-[11px] underline ml-2"
-          >
-            Clear
-          </button>
         </div>
       )}
 
-      {/* Bottom Left: Point Cloud Telemetry Overlay */}
-      <div className="absolute bottom-3 left-3 text-[11px] font-mono text-gray-400 bg-[#161820]/90 backdrop-blur px-3 py-1.5 rounded-lg border border-[#2b2e3d] pointer-events-none space-y-0.5 z-10 shadow-lg">
-        <div className="flex items-center gap-2 text-gray-200 font-semibold">
-          <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          <span>Rendered: {renderedCount.toLocaleString()} pts</span>
-          <span className="text-gray-600">/</span>
-          <span className="text-gray-400">{metadata.pointCount.toLocaleString()} total</span>
+      {editingMode === 'measure' && !measurementHud && (
+        <div className={cn(overlay, 'absolute bottom-14 left-1/2 z-10 -translate-x-1/2 px-3 py-1.5 text-xs text-muted-foreground whitespace-nowrap')}>
+          Tap two points to measure
         </div>
-        <div className="text-[10px] text-gray-500 flex items-center gap-2">
-          <span>Density: {metadata.densityPerSqMeter} pts/m²</span>
-          <span>·</span>
-          <span>Coverage: {metadata.bounds.sizeX.toFixed(1)}m × {metadata.bounds.sizeY.toFixed(1)}m</span>
+      )}
+
+      {measurementHud && (
+        <div className={cn(overlay, 'absolute bottom-14 left-1/2 z-20 flex -translate-x-1/2 items-center gap-4 px-3 py-2 font-mono text-xs tabular-nums whitespace-nowrap')}>
+          <span className="font-semibold text-primary">{measurementHud.distance3D} m</span>
+          <span className="text-muted-foreground">
+            ΔZ {measurementHud.deltaZ > 0 ? '+' : ''}{measurementHud.deltaZ} m
+          </span>
+          <span className="hidden text-muted-foreground sm:inline">slope {measurementHud.slopePercent}%</span>
+          <Button size="icon-xs" variant="ghost" onClick={clearMeasurement} aria-label="Clear measurement">
+            <X />
+          </Button>
         </div>
+      )}
+
+      <div className={cn(overlay, 'pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-2 px-2.5 py-1 font-mono text-[11px] text-muted-foreground tabular-nums')}>
+        <span className="size-1.5 rounded-full bg-primary" />
+        <span className="text-foreground">{renderedCount.toLocaleString()}</span>
+        <span>/ {metadata.pointCount.toLocaleString()} pts</span>
+        <span className="hidden sm:inline">· {metadata.bounds.sizeX.toFixed(0)} × {metadata.bounds.sizeY.toFixed(0)} m</span>
       </div>
     </div>
   );

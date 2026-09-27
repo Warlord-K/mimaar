@@ -1,7 +1,8 @@
 {
-  "name": "Blender Cloud 3D Studio",
-  "description": "Professional web-based 3D modeling, Cycles/EEVEE rendering workstation, Python bpy scripting, and AI scene generation directly in your browser.",
+  "name": "Mimaar",
+  "description": "Agentic LiDAR studio. Load a point cloud, see it in 3D, and tell an AI agent to filter, crop, classify and clean it.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
-

@@ -1,17 +1,11 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useRef, useSyncExternalStore } from 'react';
 import {
   LidarPoint,
   LidarMetadata,
   LidarFilterState,
   LidarRenderSettings,
   EditingMode,
-  AgentAction,
-  MeasurementResult
+  AgentAction
 } from './types/lidar';
 import { generateSampleDataset, SAMPLE_PRESETS } from './data/sampleLidar';
 import {
@@ -25,35 +19,42 @@ import {
 import { LidarViewport } from './components/LidarViewport';
 import { LidarControlsPanel } from './components/LidarControlsPanel';
 import { LidarAgentChat } from './components/LidarAgentChat';
+import { Download, SlidersHorizontal, Sparkles, Upload } from 'lucide-react';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import { Toaster } from '@/components/ui/sonner';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
-  Layers,
-  Ruler,
-  Box,
-  Download,
-  Upload,
-  RotateCcw,
-  Sparkles,
-  Mountain,
-  Compass,
-  Sliders,
-  ChevronDown,
-  Info,
-  Check
-} from 'lucide-react';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu';
+
+const PHONE_QUERY = '(max-width: 639px)';
+
+function useIsPhone() {
+  return useSyncExternalStore(
+    cb => {
+      const mql = window.matchMedia(PHONE_QUERY);
+      mql.addEventListener('change', cb);
+      return () => mql.removeEventListener('change', cb);
+    },
+    () => window.matchMedia(PHONE_QUERY).matches
+  );
+}
 
 export default function App() {
-  // Active dataset
+  const isPhone = useIsPhone();
   const [activePresetId, setActivePresetId] = useState<string>('urban_aerial');
   const initialData = useRef(generateSampleDataset('urban_aerial'));
 
-  // Point cloud data & metadata
   const [points, setPoints] = useState<LidarPoint[]>(initialData.current.points);
   const [metadata, setMetadata] = useState<LidarMetadata>(initialData.current.metadata);
 
-  // Backup of raw points for undoing permanent crop/filter edits
   const originalPointsRef = useRef<LidarPoint[]>(initialData.current.points);
 
-  // Filtering State
   const [filterState, setFilterState] = useState<LidarFilterState>({
     elevationMin: initialData.current.metadata.bounds.minZ,
     elevationMax: initialData.current.metadata.bounds.maxZ,
@@ -74,11 +75,10 @@ export default function App() {
     decimationRate: 1.0
   });
 
-  // Render & Shading Settings
   const [renderSettings, setRenderSettings] = useState<LidarRenderSettings>({
     colorMode: 'classification',
     colormap: 'viridis',
-    pointSize: 3.5,
+    pointSize: 0.5,
     sizeAttenuation: true,
     edlEnabled: true,
     edlRadius: 1.5,
@@ -87,10 +87,12 @@ export default function App() {
     backgroundColor: '#111217'
   });
 
-  // Active Tool Mode (navigate | measure | box_crop)
   const [editingMode, setEditingMode] = useState<EditingMode>('navigate');
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load Preset Dataset
   const handleLoadPreset = (presetId: string) => {
     setActivePresetId(presetId);
     const parsed = generateSampleDataset(presetId);
@@ -128,37 +130,32 @@ export default function App() {
     });
   };
 
-  // Import User File (.las, .laz, .ply, .xyz, .csv)
   const handleImportFile = async (file: File) => {
     const filename = file.name.toLowerCase();
+    if (filename.endsWith('.laz')) {
+      toast.error('Compressed .laz is not supported yet. Export as .las and try again.');
+      return;
+    }
     try {
-      if (filename.endsWith('.las') || filename.endsWith('.laz')) {
-        const buffer = await file.arrayBuffer();
-        const parsed = parseLasFile(buffer, file.name);
-        setPoints(parsed.points);
-        setMetadata(parsed.metadata);
-        originalPointsRef.current = parsed.points;
-        resetFilterStateForNewCloud(parsed.metadata);
+      let parsed;
+      if (filename.endsWith('.las')) {
+        parsed = parseLasFile(await file.arrayBuffer(), file.name);
       } else if (filename.endsWith('.ply')) {
-        const buffer = await file.arrayBuffer();
-        const parsed = parsePlyFile(buffer, file.name);
-        setPoints(parsed.points);
-        setMetadata(parsed.metadata);
-        originalPointsRef.current = parsed.points;
-        resetFilterStateForNewCloud(parsed.metadata);
-      } else if (filename.endsWith('.xyz') || filename.endsWith('.pts') || filename.endsWith('.csv') || filename.endsWith('.txt')) {
-        const text = await file.text();
-        const parsed = parseXyzFile(text, file.name);
-        setPoints(parsed.points);
-        setMetadata(parsed.metadata);
-        originalPointsRef.current = parsed.points;
-        resetFilterStateForNewCloud(parsed.metadata);
+        parsed = parsePlyFile(await file.arrayBuffer(), file.name);
+      } else if (/\.(xyz|pts|csv|txt)$/.test(filename)) {
+        parsed = parseXyzFile(await file.text(), file.name);
       } else {
-        alert('Unsupported file format. Please upload .LAS, .LAZ, .PLY, or .XYZ point cloud files.');
+        toast.error('Unsupported format. Use .las, .ply or .xyz files.');
+        return;
       }
+      setPoints(parsed.points);
+      setMetadata(parsed.metadata);
+      originalPointsRef.current = parsed.points;
+      resetFilterStateForNewCloud(parsed.metadata);
+      setActivePresetId('');
+      toast.success(`Loaded ${file.name}`, { description: `${parsed.metadata.pointCount.toLocaleString()} points` });
     } catch (err: any) {
-      console.error('File import error:', err);
-      alert(`Error reading LiDAR file: ${err.message || err}`);
+      toast.error(`Could not read ${file.name}`, { description: String(err.message || err) });
     }
   };
 
@@ -176,7 +173,6 @@ export default function App() {
     });
   };
 
-  // Permanent Box Crop: trims points outside the current crop box
   const handleApplyCropToPoints = () => {
     if (!filterState.cropBoxEnabled) return;
     const [minX, minY, minZ] = filterState.cropBoxMin;
@@ -189,7 +185,7 @@ export default function App() {
     );
 
     if (cropped.length === 0) {
-      alert('Cannot crop: no points inside selected bounding box.');
+      toast.error('No points inside the crop box.');
       return;
     }
 
@@ -197,11 +193,9 @@ export default function App() {
     setFilterState(prev => ({ ...prev, cropBoxEnabled: false }));
   };
 
-  // Statistical Outlier Removal (SOR) to clean noise
   const handleRemoveOutliers = () => {
     if (points.length < 50) return;
 
-    // Approximate SOR: calculate z-score based on distance to cloud centroid
     let sumZ = 0;
     points.forEach(p => { sumZ += p.z; });
     const meanZ = sumZ / points.length;
@@ -210,7 +204,6 @@ export default function App() {
     points.forEach(p => { sumSqDiff += (p.z - meanZ) ** 2; });
     const stdDevZ = Math.sqrt(sumSqDiff / points.length);
 
-    // Keep points within 2.8 standard deviations in Z and non-noise classes
     const cleaned = points.filter(p => {
       const isNoiseClass = p.classification === 7 || p.classification === 18;
       const isExtremeZ = Math.abs(p.z - meanZ) > stdDevZ * 2.8;
@@ -220,15 +213,12 @@ export default function App() {
     setPoints(cleaned);
   };
 
-  // Reset Filters & Undo Edits
   const handleResetFilters = () => {
     setPoints(originalPointsRef.current);
     resetFilterStateForNewCloud(metadata);
   };
 
-  // Export processed cloud to file
   const handleExport = (format: 'las' | 'ply' | 'xyz') => {
-    // Only export currently filtered visible points
     const {
       elevationMin, elevationMax,
       intensityMin, intensityMax,
@@ -273,13 +263,12 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // Handle LLM Agent Actions
   const handleExecuteAgentAction = (action: AgentAction) => {
     switch (action.type) {
       case 'strip_ground':
         {
           const next = new Set(Object.keys(metadata.classCounts).map(Number));
-          next.delete(2); // remove ground
+          next.delete(2);
           setFilterState(prev => ({ ...prev, enabledClasses: next }));
         }
         break;
@@ -363,147 +352,154 @@ export default function App() {
     }
   };
 
+  const controls = (
+    <LidarControlsPanel
+      metadata={metadata}
+      filterState={filterState}
+      onUpdateFilter={up => setFilterState(prev => ({ ...prev, ...up }))}
+      renderSettings={renderSettings}
+      onUpdateRenderSettings={up => setRenderSettings(prev => ({ ...prev, ...up }))}
+      onApplyCropToPoints={handleApplyCropToPoints}
+      onRemoveOutliers={handleRemoveOutliers}
+      onResetFilters={handleResetFilters}
+    />
+  );
+
+  const chat = (
+    <LidarAgentChat
+      metadata={metadata}
+      filterState={filterState}
+      renderSettings={renderSettings}
+      onExecuteAgentAction={handleExecuteAgentAction}
+    />
+  );
+
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#111217] text-gray-200 overflow-hidden font-sans select-none">
-      {/* 1. TOP HEADER TOOLBAR */}
-      <header className="h-12 bg-[#181922] border-b border-[#2d3040] flex items-center justify-between px-3 shrink-0 z-30">
-        {/* Left: Branding & Dataset Selection */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-amber-600 to-orange-500 flex items-center justify-center shadow-md">
-              <Mountain className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <span className="font-bold text-sm text-gray-100 tracking-tight">
-                LiDAR Cloud Studio
-              </span>
-            </div>
-          </div>
+    <div className="dark flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
+        <Sheet open={controlsOpen} onOpenChange={setControlsOpen}>
+          <SheetTrigger asChild>
+            <Button size="icon-sm" variant="ghost" className="lg:hidden" aria-label="Open layers">
+              <SlidersHorizontal />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" className="dark w-[88vw] max-w-sm gap-0 p-0 text-foreground">
+            <SheetHeader className="sr-only">
+              <SheetTitle>Layers</SheetTitle>
+            </SheetHeader>
+            {controls}
+          </SheetContent>
+        </Sheet>
 
-          <div className="h-4 w-px bg-gray-700 mx-1" />
-
-          {/* Quick Dataset Selector */}
-          <div className="flex items-center bg-[#20222e] border border-[#303348] rounded-md px-2 py-1 gap-2 text-xs font-mono">
-            <span className="text-gray-400">Scan:</span>
-            <select
-              value={activePresetId}
-              onChange={e => handleLoadPreset(e.target.value)}
-              className="bg-transparent text-amber-400 font-semibold outline-none cursor-pointer"
-            >
-              {SAMPLE_PRESETS.map(p => (
-                <option key={p.id} value={p.id} className="bg-[#181922] text-gray-200">
-                  {p.name} ({p.pointCount.toLocaleString()} pts)
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="flex items-center gap-2 pr-1">
+          <img src="/favicon.svg" alt="" className="size-6" />
+          <span className="hidden text-sm font-semibold tracking-tight sm:inline">Mimaar</span>
         </div>
 
-        {/* Center: Primary Interaction Tools */}
-        <div className="flex items-center bg-[#20222e] border border-[#303348] rounded-lg p-0.5 text-xs font-medium">
-          <button
-            onClick={() => setEditingMode('navigate')}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded transition-colors ${
-              editingMode === 'navigate'
-                ? 'bg-[#3b82f6] text-white shadow-sm'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Navigate</span>
-          </button>
+        <Select value={activePresetId} onValueChange={handleLoadPreset}>
+          <SelectTrigger size="sm" className="w-auto max-w-[46vw] min-w-0 border-transparent bg-transparent dark:bg-transparent sm:max-w-xs">
+            <SelectValue placeholder={metadata.filename} />
+          </SelectTrigger>
+          <SelectContent className="dark">
+            {SAMPLE_PRESETS.map(p => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-          <button
-            onClick={() => setEditingMode('measure')}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded transition-colors ${
-              editingMode === 'measure'
-                ? 'bg-[#e87d0d] text-white shadow-sm'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            <Ruler className="w-3.5 h-3.5" />
-            <span>3D Measure</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setFilterState(prev => ({ ...prev, cropBoxEnabled: !prev.cropBoxEnabled }));
+        <div className="ml-auto flex items-center gap-1.5">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".las,.ply,.xyz,.pts,.csv,.txt"
+            className="hidden"
+            onChange={e => {
+              const file = e.target.files?.[0];
+              if (file) handleImportFile(file);
+              e.target.value = '';
             }}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded transition-colors ${
-              filterState.cropBoxEnabled
-                ? 'bg-[#00f0ff] text-gray-950 font-bold shadow-sm'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            <Box className="w-3.5 h-3.5" />
-            <span>ROI Box Crop</span>
-          </button>
-        </div>
+          />
+          <Button size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()}>
+            <Upload />
+            <span className="hidden sm:inline">Import</span>
+          </Button>
 
-        {/* Right: Actions (Reset, Export) */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleResetFilters}
-            title="Reset all filters and restore full cloud"
-            className="flex items-center gap-1 px-2.5 py-1.5 bg-[#252838] hover:bg-[#31354a] border border-[#373b52] text-gray-300 rounded-lg text-xs font-medium transition-colors"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset</span>
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="secondary">
+                <Download />
+                <span className="hidden sm:inline">Export</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="dark">
+              <DropdownMenuItem onClick={() => handleExport('las')}>LAS (.las)</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport('ply')}>PLY (.ply)</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport('xyz')}>XYZ text (.xyz)</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
-          <button
-            onClick={() => handleExport('las')}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#e87d0d] hover:bg-[#ff8f1c] text-white rounded-lg text-xs font-semibold transition-all shadow-md"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export LAS</span>
-          </button>
+          <Sheet open={chatOpen} onOpenChange={setChatOpen}>
+            <SheetTrigger asChild>
+              <Button size="sm" className="xl:hidden" aria-label="Open agent">
+                <Sparkles />
+                <span className="hidden sm:inline">Agent</span>
+              </Button>
+            </SheetTrigger>
+            <SheetContent
+              side={isPhone ? 'bottom' : 'right'}
+              showCloseButton={false}
+              className={
+                isPhone
+                  ? 'dark h-[75dvh] gap-0 rounded-t-xl p-0 text-foreground'
+                  : 'dark w-96 gap-0 p-0 text-foreground sm:max-w-96'
+              }
+            >
+              <SheetHeader className="sr-only">
+                <SheetTitle>Agent</SheetTitle>
+              </SheetHeader>
+              {chat}
+            </SheetContent>
+          </Sheet>
         </div>
       </header>
 
-      {/* 2. THREE-PANE WORKSPACE */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Pane: Controls, Filters & Slicing (280px) */}
-        <aside className="w-72 shrink-0 h-full overflow-hidden">
-          <LidarControlsPanel
-            metadata={metadata}
-            filterState={filterState}
-            onUpdateFilter={up => setFilterState(prev => ({ ...prev, ...up }))}
-            renderSettings={renderSettings}
-            onUpdateRenderSettings={up => setRenderSettings(prev => ({ ...prev, ...up }))}
-            editingMode={editingMode}
-            onChangeEditingMode={setEditingMode}
-            onLoadPreset={handleLoadPreset}
-            onImportFile={handleImportFile}
-            onApplyCropToPoints={handleApplyCropToPoints}
-            onRemoveOutliers={handleRemoveOutliers}
-            onResetFilters={handleResetFilters}
-            onExport={handleExport}
-          />
-        </aside>
+      <div className="flex min-h-0 flex-1">
+        <aside className="hidden w-72 shrink-0 border-r bg-sidebar lg:block">{controls}</aside>
 
-        {/* Center Pane: 3D Point Cloud Viewport (flex-1) */}
-        <main className="flex-1 h-full relative overflow-hidden">
+        <main
+          className="relative min-w-0 flex-1"
+          onDragOver={e => {
+            e.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={e => {
+            e.preventDefault();
+            setIsDragging(false);
+            const file = e.dataTransfer.files?.[0];
+            if (file) handleImportFile(file);
+          }}
+        >
           <LidarViewport
             points={points}
             metadata={metadata}
             filterState={filterState}
             renderSettings={renderSettings}
             editingMode={editingMode}
+            onChangeEditingMode={setEditingMode}
           />
+          {isDragging && (
+            <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
+              Drop a .las, .ply or .xyz file
+            </div>
+          )}
         </main>
 
-        {/* Right Pane: LLM Agentic Chat (360px) */}
-        <aside className="w-96 shrink-0 h-full overflow-hidden">
-          <LidarAgentChat
-            metadata={metadata}
-            filterState={filterState}
-            renderSettings={renderSettings}
-            onExecuteAgentAction={handleExecuteAgentAction}
-            onResetFilters={handleResetFilters}
-          />
-        </aside>
+        <aside className="hidden w-[360px] shrink-0 border-l bg-sidebar xl:block">{chat}</aside>
       </div>
+      <Toaster position="top-center" />
     </div>
   );
 }
