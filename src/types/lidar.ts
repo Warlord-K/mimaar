@@ -44,7 +44,7 @@ export interface LidarClassificationInfo {
 
 export interface LidarMetadata {
   filename: string;
-  format: 'LAS' | 'LAZ' | 'PLY' | 'XYZ' | 'CSV' | 'SYNTHETIC';
+  format: 'LAS' | 'LAZ' | 'PLY' | 'XYZ' | 'CSV' | 'E57' | 'SYNTHETIC';
   pointCount: number;
   bounds: LidarBounds;
   hasRGB: boolean;

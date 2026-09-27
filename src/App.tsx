@@ -22,6 +22,7 @@ import {
   exportToPly,
   exportToXyz
 } from './utils/lidarParser';
+import { listClouds, uploadCloud, loadCloudPoints, UploadedCloud, CloudProgress } from './utils/cloudApi';
 import { LidarViewport } from './components/LidarViewport';
 import { LidarControlsPanel } from './components/LidarControlsPanel';
 import { LidarAgentChat } from './components/LidarAgentChat';
@@ -90,8 +91,56 @@ export default function App() {
   // Active Tool Mode (navigate | measure | box_crop)
   const [editingMode, setEditingMode] = useState<EditingMode>('navigate');
 
+  // Server-side scans (.e57 uploads converted for the viewer)
+  const [uploadedClouds, setUploadedClouds] = useState<UploadedCloud[]>([]);
+  const [importStatus, setImportStatus] = useState<{ label: string; progress?: CloudProgress; error?: string } | null>(null);
+
+  const refreshUploadedClouds = () =>
+    listClouds()
+      .then(setUploadedClouds)
+      .catch(err => console.warn('Could not list uploaded clouds:', err));
+
+  useEffect(() => {
+    refreshUploadedClouds();
+  }, []);
+
+  const showParsedCloud = (parsed: { points: LidarPoint[]; metadata: LidarMetadata }) => {
+    setPoints(parsed.points);
+    setMetadata(parsed.metadata);
+    originalPointsRef.current = parsed.points;
+    resetFilterStateForNewCloud(parsed.metadata);
+    if (parsed.metadata.hasRGB) setRenderSettings(prev => ({ ...prev, colorMode: 'rgb' }));
+  };
+
+  const handleLoadUploadedCloud = async (cloud: UploadedCloud) => {
+    setImportStatus({ label: `Loading ${cloud.name}` });
+    try {
+      showParsedCloud(await loadCloudPoints(cloud));
+      setActivePresetId(`cloud:${cloud.id}`);
+      setImportStatus(null);
+    } catch (err: any) {
+      setImportStatus({ label: cloud.name, error: err.message || String(err) });
+    }
+  };
+
+  const handleUploadE57 = async (file: File) => {
+    setImportStatus({ label: `Uploading ${file.name}`, progress: { phase: 'uploading', fraction: 0 } });
+    try {
+      const cloud = await uploadCloud(file, progress => setImportStatus({ label: file.name, progress }));
+      await refreshUploadedClouds();
+      await handleLoadUploadedCloud(cloud);
+    } catch (err: any) {
+      setImportStatus({ label: file.name, error: err.message || String(err) });
+    }
+  };
+
   // Load Preset Dataset
   const handleLoadPreset = (presetId: string) => {
+    if (presetId.startsWith('cloud:')) {
+      const cloud = uploadedClouds.find(c => `cloud:${c.id}` === presetId);
+      if (cloud) handleLoadUploadedCloud(cloud);
+      return;
+    }
     setActivePresetId(presetId);
     const parsed = generateSampleDataset(presetId);
     setPoints(parsed.points);
@@ -128,11 +177,14 @@ export default function App() {
     });
   };
 
-  // Import User File (.las, .laz, .ply, .xyz, .csv)
+  // Import User File (.las, .laz, .ply, .xyz, .csv, .e57)
   const handleImportFile = async (file: File) => {
     const filename = file.name.toLowerCase();
     try {
-      if (filename.endsWith('.las') || filename.endsWith('.laz')) {
+      if (filename.endsWith('.e57')) {
+        // E57 scans are usually far too large to parse in the browser; convert server-side
+        await handleUploadE57(file);
+      } else if (filename.endsWith('.las') || filename.endsWith('.laz')) {
         const buffer = await file.arrayBuffer();
         const parsed = parseLasFile(buffer, file.name);
         setPoints(parsed.points);
@@ -154,7 +206,7 @@ export default function App() {
         originalPointsRef.current = parsed.points;
         resetFilterStateForNewCloud(parsed.metadata);
       } else {
-        alert('Unsupported file format. Please upload .LAS, .LAZ, .PLY, or .XYZ point cloud files.');
+        alert('Unsupported file format. Please upload .E57, .LAS, .LAZ, .PLY, or .XYZ point cloud files.');
       }
     } catch (err: any) {
       console.error('File import error:', err);
@@ -395,6 +447,17 @@ export default function App() {
                   {p.name} ({p.pointCount.toLocaleString()} pts)
                 </option>
               ))}
+              {uploadedClouds.some(c => c.status === 'ready') && (
+                <optgroup label="Uploaded scans" className="bg-[#181922] text-gray-400">
+                  {uploadedClouds
+                    .filter(c => c.status === 'ready')
+                    .map(c => (
+                      <option key={c.id} value={`cloud:${c.id}`} className="bg-[#181922] text-gray-200">
+                        {c.name} ({(c.summary?.sourcePoints ?? 0).toLocaleString()} pts)
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
           </div>
         </div>
@@ -484,6 +547,42 @@ export default function App() {
 
         {/* Center Pane: 3D Point Cloud Viewport (flex-1) */}
         <main className="flex-1 h-full relative overflow-hidden">
+          {importStatus && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 w-80 bg-[#1a1c24]/95 backdrop-blur border border-[#2e3140] rounded-lg px-3 py-2.5 text-xs shadow-xl">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-gray-200 font-medium">{importStatus.label}</span>
+                {importStatus.error && (
+                  <button onClick={() => setImportStatus(null)} className="text-gray-500 hover:text-gray-300">
+                    Dismiss
+                  </button>
+                )}
+              </div>
+              {importStatus.error ? (
+                <div className="mt-1 text-red-400">{importStatus.error}</div>
+              ) : importStatus.progress ? (
+                <>
+                  <div className="mt-1.5 flex justify-between text-gray-400 font-mono">
+                    <span>
+                      {importStatus.progress.phase === 'uploading'
+                        ? 'Uploading'
+                        : importStatus.progress.phase === 'queued'
+                          ? 'Waiting to convert'
+                          : 'Converting on server'}
+                    </span>
+                    <span>{Math.round(importStatus.progress.fraction * 100)}%</span>
+                  </div>
+                  <div className="mt-1 h-1 bg-[#2a2d3d] rounded overflow-hidden">
+                    <div
+                      className="h-full bg-amber-500 transition-all"
+                      style={{ width: `${importStatus.progress.fraction * 100}%` }}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="mt-1 text-gray-400">Preparing point cloud…</div>
+              )}
+            </div>
+          )}
           <LidarViewport
             points={points}
             metadata={metadata}

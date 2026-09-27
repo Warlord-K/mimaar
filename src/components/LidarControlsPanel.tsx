@@ -148,14 +148,14 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
           </select>
 
           <label
-            title="Import .las, .laz, .ply, .xyz file"
+            title="Import .e57, .las, .laz, .ply, .xyz file"
             className="px-2.5 py-1.5 bg-[#2a2d3d] hover:bg-[#383d54] text-gray-200 rounded border border-[#3d425a] cursor-pointer flex items-center gap-1 shrink-0 font-medium transition-colors"
           >
             <Upload className="w-3.5 h-3.5 text-amber-400" />
             <span>Import</span>
             <input
               type="file"
-              accept=".las,.laz,.ply,.xyz,.pts,.csv,.txt"
+              accept=".e57,.las,.laz,.ply,.xyz,.pts,.csv,.txt"
               onChange={handleFileInput}
               className="hidden"
             />
@@ -173,7 +173,7 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
               : 'border-[#2f3346] text-gray-500'
           }`}
         >
-          Drag & drop .LAS / .PLY / .XYZ file here
+          Drag & drop .E57 / .LAS / .PLY / .XYZ file here
         </div>
       </div>
 

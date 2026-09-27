@@ -7,6 +7,7 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { createCloudRouter } from './server/clouds';
 
 dotenv.config();
 
@@ -408,6 +409,7 @@ app.get(['/api/v1/status', '/api/status', '/api/v1/health', '/health'], (req, re
       'LIDAR_LAS_PARSER',
       'LIDAR_PLY_PARSER',
       'LIDAR_XYZ_PARSER',
+      'LIDAR_E57_INGEST',
       'ASPRS_CLASSIFICATION_ENGINE',
       'AGENTIC_LLM_INTEGRATION'
     ],
@@ -460,6 +462,11 @@ app.delete('/api/v1/auth/keys/:id', (req, res) => {
   saveApiKeys();
   res.json({ message: 'API key deleted successfully' });
 });
+
+// -------------------------------------------------------------
+// 4. Point Cloud Ingest (E57 upload -> conversion -> viewer)
+// -------------------------------------------------------------
+app.use('/api/v1/clouds', createCloudRouter(authenticateApiKey));
 
 // -------------------------------------------------------------
 // Vite Middleware & Static Setup
