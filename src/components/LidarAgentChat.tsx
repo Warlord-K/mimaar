@@ -6,7 +6,7 @@ import {
   LidarFilterState,
   LidarRenderSettings
 } from '../types/lidar';
-import { ArrowUp, Check, Loader2, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowUp, Check, Loader2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
@@ -121,18 +121,6 @@ export const LidarAgentChat: React.FC<LidarAgentChatProps> = ({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
-        <div className="flex items-center gap-2">
-          <Sparkles className="size-4 text-primary" />
-          <span className="text-sm font-medium">Agent</span>
-        </div>
-        {messages.length > 0 && (
-          <Button size="icon-sm" variant="ghost" onClick={() => setMessages([])} aria-label="Clear chat">
-            <Trash2 />
-          </Button>
-        )}
-      </div>
-
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col justify-end gap-1.5 pb-2">
@@ -198,6 +186,17 @@ export const LidarAgentChat: React.FC<LidarAgentChatProps> = ({
           }}
           className="flex items-center gap-2"
         >
+          {messages.length > 0 && (
+            <Button
+              type="button"
+              size="icon-lg"
+              variant="ghost"
+              onClick={() => setMessages([])}
+              aria-label="Clear chat"
+            >
+              <Trash2 />
+            </Button>
+          )}
           <Input
             value={input}
             onChange={e => setInput(e.target.value)}

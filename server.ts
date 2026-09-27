@@ -7,6 +7,7 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { createPhotorealRouter } from './server/photoreal';
 
 dotenv.config();
 
@@ -430,7 +431,9 @@ app.get(['/api/v1/status', '/api/status', '/api/v1/health', '/health'], (req, re
       'LIDAR_PLY_PARSER',
       'LIDAR_XYZ_PARSER',
       'ASPRS_CLASSIFICATION_ENGINE',
-      'AGENTIC_LLM_INTEGRATION'
+      'AGENTIC_LLM_INTEGRATION',
+      'PHOTOREAL_RENDER_NANO_BANANA_2',
+      'VIDEO_GENERATION_GEMINI_OMNI'
     ],
     authenticated: !!(req as any).apiKeyInfo
   });
@@ -481,6 +484,11 @@ app.delete('/api/v1/auth/keys/:id', (req, res) => {
   saveApiKeys();
   res.json({ message: 'API key deleted successfully' });
 });
+
+// -------------------------------------------------------------
+// 4. Photoreal Rendering (Nano Banana 2) & Video (Gemini Omni)
+// -------------------------------------------------------------
+app.use('/api/v1/photoreal', createPhotorealRouter(authenticateApiKey));
 
 // -------------------------------------------------------------
 // Vite Middleware & Static Setup

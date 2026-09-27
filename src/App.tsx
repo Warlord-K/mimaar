@@ -19,6 +19,9 @@ import {
 import { LidarViewport } from './components/LidarViewport';
 import { LidarControlsPanel } from './components/LidarControlsPanel';
 import { LidarAgentChat } from './components/LidarAgentChat';
+import { PhotorealStudio } from './components/PhotorealStudio';
+import { ViewportCaptureFn } from './types/photoreal';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Download, SlidersHorizontal, Sparkles, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -92,6 +95,10 @@ export default function App() {
   const [chatOpen, setChatOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [rightPane, setRightPane] = useState<'agent' | 'photoreal'>('agent');
+  const captureRef = useRef<ViewportCaptureFn | null>(null);
+  const photorealSceneHint =
+    metadata.format === 'SYNTHETIC' ? SAMPLE_PRESETS.find(p => p.id === activePresetId)?.description ?? '' : '';
 
   const handleLoadPreset = (presetId: string) => {
     setActivePresetId(presetId);
@@ -366,12 +373,35 @@ export default function App() {
   );
 
   const chat = (
-    <LidarAgentChat
-      metadata={metadata}
-      filterState={filterState}
-      renderSettings={renderSettings}
-      onExecuteAgentAction={handleExecuteAgentAction}
-    />
+    <Tabs
+      value={rightPane}
+      onValueChange={v => setRightPane(v as 'agent' | 'photoreal')}
+      className="flex h-full min-h-0 flex-col gap-0"
+    >
+      <div className="border-b px-3 py-2.5">
+        <TabsList className="w-full">
+          <TabsTrigger value="agent">Agent</TabsTrigger>
+          <TabsTrigger value="photoreal">Photoreal</TabsTrigger>
+        </TabsList>
+      </div>
+      <TabsContent value="agent" forceMount className="min-h-0 flex-1 data-[state=inactive]:hidden">
+        <LidarAgentChat
+          metadata={metadata}
+          filterState={filterState}
+          renderSettings={renderSettings}
+          onExecuteAgentAction={handleExecuteAgentAction}
+        />
+      </TabsContent>
+      <TabsContent value="photoreal" forceMount className="min-h-0 flex-1 data-[state=inactive]:hidden">
+        <PhotorealStudio
+          captureRef={captureRef}
+          metadata={metadata}
+          filterState={filterState}
+          renderSettings={renderSettings}
+          defaultScene={photorealSceneHint}
+        />
+      </TabsContent>
+    </Tabs>
   );
 
   return (
@@ -489,6 +519,7 @@ export default function App() {
             renderSettings={renderSettings}
             editingMode={editingMode}
             onChangeEditingMode={setEditingMode}
+            captureRef={captureRef}
           />
           {isDragging && (
             <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
