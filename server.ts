@@ -186,6 +186,18 @@ const AGENT_ACTION_SCHEMA = {
     description: 'Reset all elevation slices, classification filters, and ROI crops back to full dataset',
     parameters: {}
   },
+  remove_object: {
+    description:
+      'Delete one individual object (a single building, tree or piece of furniture) from the cloud, ' +
+      'rather than hiding a whole class. Points are clustered into separate objects and the chosen one is dropped. ' +
+      'Use this whenever the user says remove / delete / get rid of one of something.',
+    parameters: {
+      class: 'number (optional ASPRS class to pick from, e.g. 6 for buildings)',
+      which: "'largest' | 'smallest' | 'tallest' (optional, default largest)",
+      index: 'number (optional 0-based index into objects ordered largest first)',
+      count: 'number (optional, how many objects to remove, default 1)'
+    }
+  },
   load_dataset: {
     description: 'Switch active LiDAR dataset',
     parameters: {
@@ -255,6 +267,11 @@ SUPPORTED AGENT ACTIONS & CONTRACTS:
 10. remove_outliers: {} -> Statistical Outlier Removal (SOR) to clean airborne noise.
 11. reset_filters: {} -> Restores full unclipped cloud.
 12. load_dataset: { presetId: "urban_aerial"|"forest_watershed"|"highway_bridge"|"archaeological_mound" }
+13. remove_object: { class?: number, which?: "largest"|"smallest"|"tallest", index?: number, count?: number }
+    -> Permanently deletes ONE individual object (one building, one tree), not a whole class.
+    Use this for "remove one of the buildings", "delete that tree", "get rid of one of them".
+    Prefer this over isolate_* whenever the user says remove/delete rather than show/isolate.
+    The user can undo it with reset_filters, so act rather than asking for clarification.
 
 USER INSTRUCTION: "${message}"
 
@@ -316,6 +333,33 @@ function generateLocalFallbackReply(message: string, sceneSummary: any) {
     });
     reply = `Ground points (ASPRS Class 2) have been removed from view. The remaining points display tree canopies, power transmission lines, and structural facades.`;
     suggested.push('Color by elevation with Turbo', 'Isolate buildings only', 'Reset filters');
+  } else if (
+    /\b(remove|delete|erase|get rid of|take out|demolish)\b/.test(lower) &&
+    !/(ground|noise|outlier|clean|filter|all building|all tree)/.test(lower)
+  ) {
+    // "remove one of them" / "delete that building" -> drop a single clustered object
+    const cls = /building|structure|house|block/.test(lower)
+      ? 6
+      : /tree|vegetation|canopy/.test(lower)
+        ? 5
+        : undefined;
+    const which = /smallest|littlest/.test(lower) ? 'smallest' : /tallest|highest/.test(lower) ? 'tallest' : 'largest';
+    const ordinal = lower.match(/\b(second|third|fourth|2nd|3rd|4th)\b/);
+    const ordinalIndex = ordinal ? { second: 1, '2nd': 1, third: 2, '3rd': 2, fourth: 3, '4th': 3 }[ordinal[1]] : undefined;
+    const countMatch = lower.match(/\b(\d+)\b/);
+    const count = countMatch && Number(countMatch[1]) > 1 && Number(countMatch[1]) < 20 ? Number(countMatch[1]) : 1;
+
+    actions.push({
+      id: `act_${Date.now()}`,
+      type: 'remove_object',
+      label: count > 1 ? `Remove ${count} Objects` : 'Remove Object',
+      parameters: { ...(cls ? { class: cls } : {}), which, ...(ordinalIndex !== undefined ? { index: ordinalIndex } : {}), count },
+      explanation: 'Clustered the visible points into separate objects and deleted the selected one.'
+    });
+    reply = `Removed ${count > 1 ? `the ${count} ${which} objects` : `the ${which} object`}${
+      cls === 6 ? ' from the building returns' : cls === 5 ? ' from the vegetation' : ''
+    }. Reset restores the full cloud.`;
+    suggested.push('Remove another one', 'Reset filters', 'Color by elevation');
   } else if (lower.includes('vegetation') || lower.includes('tree')) {
     actions.push({
       id: `act_${Date.now()}`,

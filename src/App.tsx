@@ -8,6 +8,7 @@ import {
   AgentAction
 } from './types/lidar';
 import { generateSampleDataset, SAMPLE_PRESETS } from './data/sampleLidar';
+import { DEFAULT_SCAN_ID, SCAN_DATASETS, findScan } from './data/scans';
 import {
   parseLasFile,
   parsePlyFile,
@@ -28,6 +29,7 @@ import {
   CloudProgress
 } from './utils/cloudApi';
 import { OctreeHierarchy } from './utils/octree';
+import { clusterPoints, describeCluster, pickCluster } from './utils/cluster';
 import { LidarViewport } from './components/LidarViewport';
 import { OctreeViewport } from './components/OctreeViewport';
 import { LidarControlsPanel } from './components/LidarControlsPanel';
@@ -37,7 +39,7 @@ import { PhotorealStage } from './components/PhotorealStage';
 import { usePhotoreal } from './hooks/usePhotoreal';
 import { ViewportCaptureFn } from './types/photoreal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Download, FolderUp, SlidersHorizontal, Sparkles, Upload, X } from 'lucide-react';
+import { Download, FolderUp, Loader2, SlidersHorizontal, Sparkles, Upload, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
@@ -60,6 +62,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 const PHONE_QUERY = '(max-width: 639px)';
+const DEFAULT_POINT_SIZE = 0.5;
 
 function useIsPhone() {
   return useSyncExternalStore(
@@ -74,7 +77,8 @@ function useIsPhone() {
 
 export default function App() {
   const isPhone = useIsPhone();
-  const [activePresetId, setActivePresetId] = useState<string>('urban_aerial');
+  const [activePresetId, setActivePresetId] = useState<string>(DEFAULT_SCAN_ID);
+  const [loadingScan, setLoadingScan] = useState<string | null>(findScan(DEFAULT_SCAN_ID)?.name ?? null);
   const initialData = useRef(generateSampleDataset('urban_aerial'));
 
   const [points, setPoints] = useState<LidarPoint[]>(initialData.current.points);
@@ -105,7 +109,7 @@ export default function App() {
   const [renderSettings, setRenderSettings] = useState<LidarRenderSettings>({
     colorMode: 'classification',
     colormap: 'viridis',
-    pointSize: 0.5,
+    pointSize: DEFAULT_POINT_SIZE,
     sizeAttenuation: true,
     edlEnabled: true,
     edlRadius: 1.5,
@@ -137,7 +141,8 @@ export default function App() {
   const [rightPane, setRightPane] = useState<'agent' | 'photoreal'>('agent');
   const captureRef = useRef<ViewportCaptureFn | null>(null);
   const photorealSceneHint =
-    metadata.format === 'SYNTHETIC' ? SAMPLE_PRESETS.find(p => p.id === activePresetId)?.description ?? '' : '';
+    findScan(activePresetId)?.description ??
+    (metadata.format === 'SYNTHETIC' ? SAMPLE_PRESETS.find(p => p.id === activePresetId)?.description ?? '' : '');
   const photoreal = usePhotoreal({
     captureRef,
     metadata,
@@ -202,6 +207,43 @@ export default function App() {
     }
   };
 
+  const applyParsed = (parsed: { points: LidarPoint[]; metadata: LidarMetadata }) => {
+    setPoints(parsed.points);
+    setMetadata(parsed.metadata);
+    originalPointsRef.current = parsed.points;
+    resetFilterStateForNewCloud(parsed.metadata);
+  };
+
+  /** Scans ship as .ply in public/scans and are fetched on demand. */
+  const handleLoadScan = async (scanId: string) => {
+    const scan = findScan(scanId);
+    if (!scan) return;
+    setActivePresetId(scanId);
+    setLoadingScan(scan.name);
+    try {
+      const response = await fetch(scan.url);
+      if (!response.ok) throw new Error(`Server returned status ${response.status}`);
+      const parsed = parsePlyFile(await response.arrayBuffer(), scan.name);
+      applyParsed(parsed);
+      setRenderSettings(prev => ({
+        ...prev,
+        colorMode: scan.recommendedColorMode,
+        colormap: scan.recommendedColormap,
+        pointSize: scan.pointSize,
+        structureOpacity: scan.structureOpacity
+      }));
+    } catch (err: any) {
+      toast.error(`Could not load ${scan.name}`, { description: String(err.message || err) });
+    } finally {
+      setLoadingScan(null);
+    }
+  };
+
+  useEffect(() => {
+    handleLoadScan(DEFAULT_SCAN_ID);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleLoadPreset = (presetId: string) => {
     if (presetId.startsWith('cloud:')) {
       const cloud = uploadedClouds.find(c => `cloud:${c.id}` === presetId);
@@ -209,6 +251,10 @@ export default function App() {
       return;
     }
     leaveStreamedCloud();
+    if (findScan(presetId)) {
+      handleLoadScan(presetId);
+      return;
+    }
     setActivePresetId(presetId);
     const parsed = generateSampleDataset(presetId);
     setPoints(parsed.points);
@@ -220,7 +266,9 @@ export default function App() {
       setRenderSettings(prev => ({
         ...prev,
         colorMode: presetConfig.recommendedColorMode,
-        colormap: presetConfig.recommendedColormap
+        colormap: presetConfig.recommendedColormap,
+        pointSize: DEFAULT_POINT_SIZE,
+        structureOpacity: 1
       }));
     }
 
@@ -268,7 +316,12 @@ export default function App() {
       setMetadata(parsed.metadata);
       originalPointsRef.current = parsed.points;
       resetFilterStateForNewCloud(parsed.metadata);
+      // Scan-specific point size and translucent walls don't suit an arbitrary import
+      if (findScan(activePresetId)) {
+        setRenderSettings(prev => ({ ...prev, pointSize: DEFAULT_POINT_SIZE, structureOpacity: 1 }));
+      }
       setActivePresetId('');
+      setLoadingScan(null);
       toast.success(`Loaded ${file.name}`, { description: `${parsed.metadata.pointCount.toLocaleString()} points` });
     } catch (err: any) {
       toast.error(`Could not read ${file.name}`, { description: String(err.message || err) });
@@ -327,6 +380,46 @@ export default function App() {
     });
 
     setPoints(cleaned);
+  };
+
+  /**
+   * Delete one physical object rather than a whole class: cluster the points the user can currently
+   * see, pick the one they asked for, and drop it. Reset restores it.
+   */
+  const handleRemoveObject = (params: Record<string, any>) => {
+    const classes: number[] | undefined = Array.isArray(params.classes)
+      ? params.classes
+      : typeof params.class === 'number'
+        ? [params.class]
+        : filterState.enabledClasses.size > 0
+          ? Array.from(filterState.enabledClasses)
+          : undefined;
+
+    const clusters = clusterPoints(points, { classes });
+    if (!clusters.length) {
+      toast.error('Nothing to remove', { description: 'No separate objects found in the visible points.' });
+      return;
+    }
+
+    const howMany = Math.max(1, Math.min(Number(params.count) || 1, clusters.length));
+    const target = params.index !== undefined ? Number(params.index) : (params.which ?? 'largest');
+
+    const doomed = new Set<number>();
+    const removed: string[] = [];
+    const remaining = [...clusters];
+    for (let n = 0; n < howMany; n++) {
+      const cluster = pickCluster(remaining, n === 0 ? target : 'largest');
+      if (!cluster) break;
+      cluster.indices.forEach(i => doomed.add(i));
+      removed.push(describeCluster(cluster, clusters.indexOf(cluster)));
+      remaining.splice(remaining.indexOf(cluster), 1);
+    }
+    if (!doomed.size) return;
+
+    setPoints(points.filter((_, i) => !doomed.has(i)));
+    toast.success(`Removed ${removed.length} object${removed.length > 1 ? 's' : ''}`, {
+      description: `${doomed.size.toLocaleString()} points · ${removed[0]} · Reset restores it.`
+    });
   };
 
   const handleResetFilters = () => {
@@ -467,6 +560,10 @@ export default function App() {
         }
         break;
 
+      case 'remove_object':
+        handleRemoveObject(action.parameters ?? {});
+        break;
+
       case 'export_cloud':
         handleExport((action.parameters?.format as any) || 'las');
         break;
@@ -543,6 +640,11 @@ export default function App() {
             <SelectValue placeholder={metadata.filename} />
           </SelectTrigger>
           <SelectContent className="dark">
+            {SCAN_DATASETS.map(s => (
+              <SelectItem key={s.id} value={s.id}>
+                {s.name}
+              </SelectItem>
+            ))}
             {SAMPLE_PRESETS.map(p => (
               <SelectItem key={p.id} value={p.id}>
                 {p.name}
@@ -634,7 +736,7 @@ export default function App() {
               showCloseButton={false}
               className={
                 isPhone
-                  ? 'dark h-[75dvh] gap-0 rounded-t-xl p-0 text-foreground'
+                  ? 'dark gap-0 rounded-t-xl p-0 text-foreground data-[side=bottom]:h-[75dvh]'
                   : 'dark w-96 gap-0 p-0 text-foreground sm:max-w-96'
               }
             >
@@ -683,6 +785,7 @@ export default function App() {
               editingMode={editingMode}
               onChangeEditingMode={setEditingMode}
               captureRef={captureRef}
+              startInside={!!findScan(activePresetId)?.startInside}
             />
           )}
           {importStatus && (
@@ -719,6 +822,12 @@ export default function App() {
               ) : (
                 <div className="mt-1 text-muted-foreground">Preparing point cloud…</div>
               )}
+            </div>
+          )}
+          {loadingScan && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              Loading {loadingScan}
             </div>
           )}
           <PhotorealStage photoreal={photoreal} />

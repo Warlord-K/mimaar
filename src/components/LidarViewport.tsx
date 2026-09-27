@@ -26,6 +26,8 @@ interface LidarViewportProps {
   onMeasurementChange?: (result: MeasurementResult | null) => void;
   /** Filled with a function that captures the current view (used by Photoreal Studio). */
   captureRef?: React.MutableRefObject<ViewportCaptureFn | null>;
+  /** Start at eye height in the middle of the cloud (room scans) rather than orbiting from outside. */
+  startInside?: boolean;
 }
 
 export const LidarViewport: React.FC<LidarViewportProps> = ({
@@ -37,7 +39,8 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   onChangeEditingMode,
   onUpdateCropBox,
   onMeasurementChange,
-  captureRef
+  captureRef,
+  startInside = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -46,6 +49,8 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const pointsMeshRef = useRef<THREE.Points | null>(null);
+  /** Structure points drawn translucent on top of the opaque cloud when structureOpacity < 1. */
+  const translucentMeshRef = useRef<THREE.Points | null>(null);
   const cropBoxMeshRef = useRef<THREE.LineSegments | null>(null);
   const measurementLineRef = useRef<THREE.Line | null>(null);
 
@@ -72,7 +77,40 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
     const maxDim = Math.max(metadata.bounds.sizeX, metadata.bounds.sizeY, metadata.bounds.sizeZ);
     const el = containerRef.current;
     const aspect = el && el.clientHeight > 0 ? el.clientWidth / el.clientHeight : 1;
-    return Math.max(30, (maxDim * 1.25) / Math.min(1, aspect));
+    return Math.max(Math.min(30, maxDim * 1.5), (maxDim * 1.25) / Math.min(1, aspect));
+  };
+
+  const maxDimension = () => Math.max(metadata.bounds.sizeX, metadata.bounds.sizeY, metadata.bounds.sizeZ);
+
+  const applyOrbit = () => {
+    const { theta, phi, radius, target } = orbitRef.current;
+    cameraRef.current?.position.set(
+      target.x + radius * Math.sin(phi) * Math.sin(theta),
+      target.y - radius * Math.sin(phi) * Math.cos(theta),
+      target.z + radius * Math.cos(phi)
+    );
+    cameraRef.current?.lookAt(target);
+  };
+
+  /** Eye height in the middle of the room, looking level toward the furniture rather than a bare wall. */
+  const placeInside = () => {
+    const b = metadata.bounds;
+    const orbit = orbitRef.current;
+    orbit.target.set(b.centerX, b.centerY, b.minZ + Math.min(1.5, b.sizeZ * 0.5));
+    orbit.radius = 0.05; // camera sits on the target, so dragging looks around the room
+    orbit.phi = Math.PI / 2;
+
+    // Objects are everything that is neither floor (2) nor walls / ceiling (6)
+    let sx = 0, sy = 0, n = 0;
+    for (let i = 0; i < points.length; i += 7) {
+      const c = points[i].classification ?? 1;
+      if (c === 2 || c === 6) continue;
+      sx += points[i].x; sy += points[i].y; n++;
+    }
+    const dx = n ? sx / n - b.centerX : 0;
+    const dy = n ? sy / n - b.centerY : 0;
+    // View direction is (-sin θ, cos θ); fall back to the longer side if the objects sit dead centre
+    orbit.theta = Math.hypot(dx, dy) > 0.3 ? Math.atan2(-dx, dy) : b.sizeX >= b.sizeY ? -Math.PI / 2 : 0;
   };
 
   // Initialize Three.js
@@ -168,6 +206,10 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
         .filter((h): h is THREE.Object3D => !!h);
       const wasVisible = helpers.map(h => h.visible);
       helpers.forEach(h => { h.visible = false; });
+      // Photoreal needs solid walls; translucent ones read as glass
+      const faded = translucentMeshRef.current?.material as THREE.PointsMaterial | undefined;
+      const fadedState = faded ? { opacity: faded.opacity, depthWrite: faded.depthWrite } : null;
+      if (faded) { faded.opacity = 1; faded.depthWrite = true; }
       renderer.render(scene, camera);
 
       const src = renderer.domElement;
@@ -178,6 +220,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       out.getContext('2d')?.drawImage(src, 0, 0, out.width, out.height);
 
       helpers.forEach((h, i) => { h.visible = wasVisible[i]; });
+      if (faded && fadedState) { faded.opacity = fadedState.opacity; faded.depthWrite = fadedState.depthWrite; }
       renderer.render(scene, camera);
       return { dataUrl: out.toDataURL('image/png'), width: out.width, height: out.height };
     };
@@ -203,14 +246,16 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
     );
     orbitRef.current.target.copy(center);
     orbitRef.current.radius = fitRadius();
+    if (startInside) placeInside();
+    applyOrbit();
 
-    const { theta, phi, radius, target } = orbitRef.current;
-    cameraRef.current.position.set(
-      target.x + radius * Math.sin(phi) * Math.sin(theta),
-      target.y - radius * Math.sin(phi) * Math.cos(theta),
-      target.z + radius * Math.cos(phi)
-    );
-    cameraRef.current.lookAt(target);
+    // The grid was sized for city-scale clouds; shrink it to sit just under a room's floor
+    const grid = sceneRef.current?.getObjectByName('lidar_grid');
+    if (grid) {
+      const small = maxDimension() < 30;
+      grid.scale.setScalar(small ? (maxDimension() * 3) / 120 : 1);
+      grid.position.set(metadata.bounds.centerX, metadata.bounds.centerY, metadata.bounds.minZ - (small ? 0.01 : 0.5));
+    }
   }, [metadata]);
 
   // Re-build or filter point cloud buffer
@@ -239,6 +284,12 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
     const posArray = new Float32Array(maxPoints * 3);
     const colArray = new Float32Array(maxPoints * 3);
 
+    const structureOpacity = renderSettings.structureOpacity ?? 1;
+    const fadeStructure = structureOpacity < 0.999;
+    const tPosArray = new Float32Array(fadeStructure ? maxPoints * 3 : 0);
+    const tColArray = new Float32Array(fadeStructure ? maxPoints * 3 : 0);
+    let tCount = 0;
+
     let count = 0;
     for (let i = 0; i < points.length; i += stride) {
       const p = points[i];
@@ -264,11 +315,6 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
           continue;
         }
       }
-
-      // Add to buffer
-      posArray[count * 3] = p.x;
-      posArray[count * 3 + 1] = p.y;
-      posArray[count * 3 + 2] = p.z;
 
       // Compute Color
       let r = 0.8, g = 0.8, b = 0.8;
@@ -301,14 +347,16 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
         else { r = 1.0; g = 0.2; b = 0.3; } // Last return
       }
 
-      colArray[count * 3] = r;
-      colArray[count * 3 + 1] = g;
-      colArray[count * 3 + 2] = b;
-
-      count++;
+      // Add to buffer: walls / buildings go to the translucent layer when faded
+      const faded = fadeStructure && cls === 6;
+      const pos = faded ? tPosArray : posArray;
+      const col = faded ? tColArray : colArray;
+      const k = (faded ? tCount++ : count++) * 3;
+      pos[k] = p.x; pos[k + 1] = p.y; pos[k + 2] = p.z;
+      col[k] = r; col[k + 1] = g; col[k + 2] = b;
     }
 
-    setRenderedCount(count);
+    setRenderedCount(count + tCount);
 
     // Update Three.js geometry
     const geometry = new THREE.BufferGeometry();
@@ -323,15 +371,39 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       transparent: false
     });
 
-    if (pointsMeshRef.current) {
-      scene.remove(pointsMeshRef.current);
-      pointsMeshRef.current.geometry.dispose();
-      (pointsMeshRef.current.material as THREE.Material).dispose();
+    for (const ref of [pointsMeshRef, translucentMeshRef]) {
+      if (!ref.current) continue;
+      scene.remove(ref.current);
+      ref.current.geometry.dispose();
+      (ref.current.material as THREE.Material).dispose();
+      ref.current = null;
     }
 
     const pointsMesh = new THREE.Points(geometry, material);
     scene.add(pointsMesh);
     pointsMeshRef.current = pointsMesh;
+
+    if (tCount > 0) {
+      const tGeometry = new THREE.BufferGeometry();
+      tGeometry.setAttribute('position', new THREE.BufferAttribute(tPosArray.subarray(0, tCount * 3), 3));
+      tGeometry.setAttribute('color', new THREE.BufferAttribute(tColArray.subarray(0, tCount * 3), 3));
+      const tMesh = new THREE.Points(
+        tGeometry,
+        new THREE.PointsMaterial({
+          size: renderSettings.pointSize,
+          vertexColors: true,
+          sizeAttenuation: renderSettings.sizeAttenuation,
+          transparent: true,
+          opacity: structureOpacity,
+          // Writing depth keeps it to one wall layer: without it every wall behind stacks up and turns opaque.
+          // The opaque cloud is drawn first, so furniture still shows through.
+          depthWrite: true
+        })
+      );
+      tMesh.renderOrder = 1;
+      scene.add(tMesh);
+      translucentMeshRef.current = tMesh;
+    }
   }, [points, metadata, filterState, renderSettings]);
 
   // Update Crop Box ROI Wireframe in 3D Scene
@@ -407,7 +479,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
         cameraRef.current.lookAt(orbit.target);
       }
     } else if (isPanningRef.current) {
-      const panSpeed = orbitRef.current.radius * 0.0015;
+      const panSpeed = Math.max(orbitRef.current.radius, maxDimension() * 0.3) * 0.0015;
       const orbit = orbitRef.current;
       const right = new THREE.Vector3(Math.cos(orbit.theta), Math.sin(orbit.theta), 0);
       const up = new THREE.Vector3(0, 0, 1);
@@ -432,7 +504,8 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
 
   const handleWheel = (e: React.WheelEvent) => {
     const zoomDelta = e.deltaY * 0.0015 * orbitRef.current.radius;
-    orbitRef.current.radius = Math.max(2.0, Math.min(500, orbitRef.current.radius + zoomDelta));
+    const minRadius = startInside ? 0.02 : Math.min(2.0, maxDimension() * 0.02);
+    orbitRef.current.radius = Math.max(minRadius, Math.min(500, orbitRef.current.radius + zoomDelta));
 
     if (cameraRef.current) {
       const orbit = orbitRef.current;
@@ -526,6 +599,7 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       orbit.radius = fitRadius();
       orbit.theta = Math.PI / 4;
       orbit.phi = Math.PI / 3.2;
+      if (startInside) placeInside();
     }
 
     if (cameraRef.current) {
