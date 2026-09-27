@@ -16,6 +16,7 @@ import {
   Filter,
   Download,
   Upload,
+  FolderUp,
   Ruler,
   Box,
   Palette,
@@ -42,7 +43,7 @@ interface LidarControlsPanelProps {
   editingMode: EditingMode;
   onChangeEditingMode: (mode: EditingMode) => void;
   onLoadPreset: (presetId: string) => void;
-  onImportFile: (file: File) => void;
+  onImportFiles: (files: File[]) => void;
   onApplyCropToPoints: () => void;
   onRemoveOutliers: () => void;
   onResetFilters: () => void;
@@ -60,7 +61,7 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
   editingMode,
   onChangeEditingMode,
   onLoadPreset,
-  onImportFile,
+  onImportFiles,
   onApplyCropToPoints,
   onRemoveOutliers,
   onResetFilters,
@@ -71,16 +72,17 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
 
   // File upload handler
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      onImportFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length) {
+      onImportFiles(Array.from(e.target.files));
     }
+    e.target.value = '';
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      onImportFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length) {
+      onImportFiles(Array.from(e.dataTransfer.files));
     }
   };
 
@@ -155,7 +157,22 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
             <span>Import</span>
             <input
               type="file"
-              accept=".e57,.las,.laz,.ply,.xyz,.pts,.csv,.txt"
+              multiple
+              accept=".e57,.bag,.yaml,.las,.laz,.ply,.xyz,.pts,.csv,.txt"
+              onChange={handleFileInput}
+              className="hidden"
+            />
+          </label>
+          <label
+            title="Upload a databag folder (.bag files + calibration.yaml)"
+            className="px-2.5 py-1.5 bg-[#2a2d3d] hover:bg-[#383d54] text-gray-200 rounded border border-[#3d425a] cursor-pointer flex items-center gap-1 shrink-0 font-medium transition-colors"
+          >
+            <FolderUp className="w-3.5 h-3.5 text-amber-400" />
+            <span>Bags</span>
+            <input
+              type="file"
+              // @ts-expect-error non-standard attribute for folder picking
+              webkitdirectory=""
               onChange={handleFileInput}
               className="hidden"
             />
@@ -173,7 +190,7 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
               : 'border-[#2f3346] text-gray-500'
           }`}
         >
-          Drag & drop .E57 / .LAS / .PLY / .XYZ file here
+          Drop .E57 / .LAS / .PLY / .XYZ, or .bag files + calibration.yaml
         </div>
       </div>
 
@@ -555,7 +572,9 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
                 <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
                   Point Size
                 </span>
-                <span className="text-amber-400 font-mono">{renderSettings.pointSize} px</span>
+                <span className="text-amber-400 font-mono">
+                  {metadata.format === 'E57' ? `×${(renderSettings.pointSize / 2).toFixed(2)}` : `${renderSettings.pointSize} px`}
+                </span>
               </div>
               <input
                 type="range"
@@ -575,6 +594,31 @@ export const LidarControlsPanel: React.FC<LidarControlsPanelProps> = ({
                   className="rounded text-amber-500"
                 />
               </div>
+              {metadata.format === 'E57' && (
+                <>
+                  <div className="flex items-center justify-between text-[11px] text-gray-400 pt-1">
+                    <span>Eye-Dome Lighting</span>
+                    <input
+                      type="checkbox"
+                      checked={renderSettings.edlEnabled}
+                      onChange={e => onUpdateRenderSettings({ edlEnabled: e.target.checked })}
+                      className="rounded text-amber-500"
+                    />
+                  </div>
+                  {renderSettings.edlEnabled && (
+                    <input
+                      type="range"
+                      min="0.2"
+                      max="3"
+                      step="0.1"
+                      value={renderSettings.edlStrength}
+                      onChange={e => onUpdateRenderSettings({ edlStrength: parseFloat(e.target.value) })}
+                      title="EDL strength"
+                      className="w-full accent-[#e87d0d]"
+                    />
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}

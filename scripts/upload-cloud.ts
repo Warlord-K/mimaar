@@ -1,8 +1,8 @@
 /**
- * Upload an .e57 scan to a running LiDAR Cloud Studio server and wait for it
- * to be converted.
+ * Upload an .e57 scan, or a ROS databag folder (*.bag + calibration.yaml), to a
+ * running LiDAR Cloud Studio server and wait for it to be processed.
  *
- *   npm run upload:cloud -- <file.e57> [--server http://localhost:3000] [--key <API_KEY>]
+ *   npm run upload:cloud -- <file.e57 | databag-folder> [--server http://localhost:3000] [--key <API_KEY>]
  *
  * The API key can also come from LIDAR_STUDIO_API_KEY; the server URL from
  * LIDAR_STUDIO_URL.
@@ -21,7 +21,7 @@ const apiKey = flag('key') || process.env.LIDAR_STUDIO_API_KEY;
 const file = args[0];
 
 if (!file || !fs.existsSync(file)) {
-  console.error('Usage: npm run upload:cloud -- <file.e57> [--server URL] [--key API_KEY]');
+  console.error('Usage: npm run upload:cloud -- <file.e57 | databag-folder> [--server URL] [--key API_KEY]');
   process.exit(1);
 }
 if (!apiKey) {
@@ -43,37 +43,53 @@ async function api(method: string, route: string, body?: any, extra: Record<stri
 }
 
 async function main() {
-  const size = fs.statSync(file).size;
-  const name = path.basename(file);
-  const { cloud, chunkBytes } = await api('POST', '', { name, size });
-  console.log(`Uploading ${name} (${(size / 1e9).toFixed(2)} GB) as ${cloud.id}`);
+  const isDir = fs.statSync(file).isDirectory();
+  // GeoScan recordings are data_N.bag; when present, ignore other bags (e.g. exports)
+  const listing = isDir ? fs.readdirSync(file) : [];
+  const recorded = listing.filter(f => /^data_\d+\.bag$/i.test(f));
+  const paths = isDir
+    ? listing
+        .filter(f => (recorded.length ? recorded.includes(f) : /\.bag$/i.test(f)) || /^calibration\.ya?ml$/i.test(f))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+        .map(f => path.join(file, f))
+    : [file];
+  if (isDir && !paths.some(p => p.endsWith('.bag'))) throw new Error(`No .bag files in ${file}`);
+  const files = paths.map(p => ({ path: p, name: path.basename(p), size: fs.statSync(p).size }));
+  const total = files.reduce((s, f) => s + f.size, 0);
+  const name = path.basename(path.resolve(file));
+  const { cloud, chunkBytes } = await api('POST', '', { name, files: files.map(({ name, size }) => ({ name, size })) });
+  console.log(`Uploading ${name}: ${files.length} file(s), ${(total / 1e9).toFixed(2)} GB, as ${cloud.id}`);
 
-  const fd = fs.openSync(file, 'r');
   const started = Date.now();
-  let offset = 0;
-  while (offset < size) {
-    const len = Math.min(chunkBytes, size - offset);
-    const chunk = Buffer.allocUnsafe(len);
-    fs.readSync(fd, chunk, 0, len, offset);
-    for (let attempt = 1; ; attempt++) {
-      try {
-        const r = await api('PUT', `/${cloud.id}/chunk`, chunk, {
-          'Content-Type': 'application/octet-stream',
-          'x-chunk-offset': String(offset)
-        });
-        offset = r.received;
-        break;
-      } catch (err: any) {
-        if (err.status === 409 && typeof err.json?.received === 'number') { offset = err.json.received; break; }
-        if (attempt >= 5) throw err;
-        console.warn(`  chunk at ${offset} failed (${err.message}), retrying...`);
-        await new Promise(r => setTimeout(r, 1000 * attempt));
+  let sent = 0;
+  for (let i = 0; i < files.length; i++) {
+    const fd = fs.openSync(files[i].path, 'r');
+    let offset = 0;
+    while (offset < files[i].size) {
+      const len = Math.min(chunkBytes, files[i].size - offset);
+      const chunk = Buffer.allocUnsafe(len);
+      fs.readSync(fd, chunk, 0, len, offset);
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const r = await api('PUT', `/${cloud.id}/chunk?file=${i}`, chunk, {
+            'Content-Type': 'application/octet-stream',
+            'x-chunk-offset': String(offset)
+          });
+          sent += r.received - offset;
+          offset = r.received;
+          break;
+        } catch (err: any) {
+          if (err.status === 409 && typeof err.json?.received === 'number') { sent += err.json.received - offset; offset = err.json.received; break; }
+          if (attempt >= 5) throw err;
+          console.warn(`  chunk at ${offset} failed (${err.message}), retrying...`);
+          await new Promise(r => setTimeout(r, 1000 * attempt));
+        }
       }
+      const mbps = sent / 1e6 / ((Date.now() - started) / 1000);
+      process.stdout.write(`\r  uploaded ${((sent / total) * 100).toFixed(1)}%  (${mbps.toFixed(0)} MB/s)   `);
     }
-    const mbps = offset / 1e6 / ((Date.now() - started) / 1000);
-    process.stdout.write(`\r  uploaded ${((offset / size) * 100).toFixed(1)}%  (${mbps.toFixed(0)} MB/s)   `);
+    fs.closeSync(fd);
   }
-  fs.closeSync(fd);
   process.stdout.write('\n');
 
   await api('POST', `/${cloud.id}/complete`);
@@ -81,16 +97,13 @@ async function main() {
     const { cloud: c } = await api('GET', `/${cloud.id}`);
     if (c.status === 'ready') {
       const s = c.summary;
-      console.log(
-        `\nReady: ${s.sourcePoints.toLocaleString()} points -> ${s.outputPoints.toLocaleString()} in viewer` +
-          ` (every ${s.decimationStride}th), ${s.scans.length} scan(s), colour: ${s.hasColor ? 'yes' : 'no'}`
-      );
+      console.log(`\nReady: ${s.pointCount.toLocaleString()} points in ${s.nodeCount} streaming tiles, colour: ${s.hasColor ? 'yes' : 'no'}`);
       if (s.origin.some((v: number) => v !== 0)) console.log(`Coordinates shifted by origin ${s.origin.join(', ')}`);
       console.log(`Open ${server} and pick "${c.name}" from the Scan menu.`);
       return;
     }
     if (c.status === 'failed') throw new Error(`Conversion failed: ${c.error}`);
-    process.stdout.write(`\r  ${c.status} ${(c.progress * 100).toFixed(0)}%   `);
+    process.stdout.write(`\r  ${(c.progress * 100).toFixed(0)}% ${c.phase ?? c.status}`.padEnd(90));
     await new Promise(r => setTimeout(r, 1500));
   }
 }

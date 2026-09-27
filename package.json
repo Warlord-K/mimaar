@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "upload:cloud": "tsx scripts/upload-cloud.ts"
+    "upload:cloud": "tsx scripts/upload-cloud.ts",
+    "setup:worker": "bash workers/setup.sh"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

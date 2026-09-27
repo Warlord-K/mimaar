@@ -1,30 +1,70 @@
-# E57 point cloud ingest
+# Point cloud ingest: E57 scans and ROS databags
 
-Large terrestrial / mobile scans (e.g. GeoScan S1 exports) arrive as `.e57`,
-often gigabytes and 100M+ points — too big to parse in the browser. They go
-through the server instead:
+Large mobile/terrestrial scans (e.g. GeoScan S1) are gigabytes and 100M+
+points — far too big to parse in the browser. They are processed on the
+server into a **streaming level-of-detail octree** and viewed like Potree:
+only the detail the camera needs is loaded, points are drawn as round splats
+sized to the real point spacing, and Eye-Dome Lighting shades depth.
 
 ```
-.e57 ──chunked upload──▶ /api/v1/clouds ──convert (server/e57)──▶ points.ply ──▶ viewer
+databag folder ──▶ bag worker (LiDAR SLAM + camera colour) ──▶ E57 ─┐
+                                                                   ├─▶ octree builder ──▶ hierarchy.json + octree.bin ──▶ browser (streams by HTTP range)
+.e57 file ─────────────────────────────────────────────────────────┘
 ```
-
-1. **Upload** in 16 MiB chunks (stays under Cloud Run's 32 MiB request cap; retried chunks are idempotent).
-2. **Convert**: a pure-Node E57 reader decodes every scan, applies each scan's pose,
-   drops invalid points, and evenly decimates to `CLOUD_MAX_POINTS` (default 2M).
-   Georeferenced coordinates are shifted to a local origin (reported in the summary)
-   so float32 keeps millimetre precision.
-3. **View**: the browser loads the decimated binary PLY. Uploaded scans appear under
-   **Uploaded scans** in the Scan menu and default to RGB shading when coloured.
 
 ## Uploading
 
-From the app: **Import** (or drag & drop) a `.e57` file.
+**In the app:** *Import* a `.e57` file, or click *Bags* and pick a databag
+folder (the `data_N.bag` files and `calibration.yaml`). Progress shows while it
+uploads and processes; the scan then opens and stays listed under
+*Uploaded scans* in the Scan menu.
 
-From the command line (server must be running):
+**From the command line** (server running):
 
 ```bash
-LIDAR_STUDIO_API_KEY=<key> npm run upload:cloud -- path/to/scan.e57 --server http://localhost:3000
+LIDAR_STUDIO_API_KEY=<key> npm run upload:cloud -- path/to/scan.e57
+LIDAR_STUDIO_API_KEY=<key> npm run upload:cloud -- path/to/DataBag_2026-09-19-08-52-18
 ```
+
+Add `--server https://your-host` for a remote server.
+
+## Setup
+
+Databag processing needs a Python environment for the worker (E57 uploads do not):
+
+```bash
+npm run setup:worker    # creates .venv-worker with rosbags, kiss-icp, pye57, ...
+```
+
+The server uses `.venv-worker/bin/python` automatically, or `CLOUD_PYTHON` if set.
+
+## What happens to a databag
+
+`workers/bag_to_e57.py`:
+
+1. Finds the bags (only `data_N.bag` when present, in numeric order), the LiDAR
+   topic (Livox `CustomMsg` or `PointCloud2`) and a camera topic.
+2. Runs KISS-ICP LiDAR odometry, deskewing each scan with per-point timestamps.
+3. Colours points from the camera using `calibration.yaml` (equidistant fisheye
+   intrinsics + LiDAR→camera extrinsics). Points outside the camera view get
+   greyscale from reflectivity.
+4. Thins to one point per 3 cm voxel, levels the map with IMU gravity, writes E57.
+
+The E57 is kept and can be downloaded from the viewer (*Export*) or
+`GET /api/v1/clouds/:id/source.e57`.
+
+Limitations: odometry is LiDAR-only without loop closure, so long walks can
+drift; for survey-grade results process with a LiDAR-inertial SLAM with loop
+closure and upload the E57.
+
+## Octree format
+
+`server/pointcloud/octree.ts` builds it out of core (3 passes over the source,
+~1 GB RAM for 112M points). Each point is stored once: inner nodes hold a
+128³-grid sample promoted from their children; leaves hold the rest.
+
+- `hierarchy.json`: cube, origin shift, and `[name, points, byteOffset, byteLength]` per node
+- `octree.bin`: per node `uint16 xyz` (quantised to the node cube) | `uint16 intensity` | `uint8 rgb`
 
 ## API
 
@@ -32,29 +72,26 @@ All routes accept the usual API key (`Authorization: Bearer`, `x-api-key`).
 
 | Method | Route | Purpose |
 |---|---|---|
-| POST | `/api/v1/clouds` | `{ name, size }` → create upload, returns `id` and `chunkBytes` |
-| PUT | `/api/v1/clouds/:id/chunk` | raw bytes, header `x-chunk-offset` |
-| POST | `/api/v1/clouds/:id/complete` | validate and queue conversion |
-| GET | `/api/v1/clouds` | list uploads |
-| GET | `/api/v1/clouds/:id` | status, progress, conversion summary |
-| GET | `/api/v1/clouds/:id/points.ply` | converted cloud |
-| DELETE | `/api/v1/clouds/:id` | remove upload and outputs |
+| POST | `/api/v1/clouds` | `{ name, files: [{ name, size }] }` → create upload, returns `id`, `chunkBytes` |
+| PUT | `/api/v1/clouds/:id/chunk?file=N` | raw bytes for file N, header `x-chunk-offset` |
+| POST | `/api/v1/clouds/:id/complete` | validate and queue processing |
+| GET | `/api/v1/clouds` | list |
+| GET | `/api/v1/clouds/:id` | status, phase, progress, summary |
+| GET | `/api/v1/clouds/:id/hierarchy.json` | octree index |
+| GET | `/api/v1/clouds/:id/octree.bin` | octree nodes (HTTP range requests) |
+| GET | `/api/v1/clouds/:id/source.e57` | uploaded or generated E57 |
+| DELETE | `/api/v1/clouds/:id` | remove |
+
+Uploads are chunked (16 MiB) so each request fits Cloud Run's 32 MiB limit and can be retried.
 
 ## Configuration
 
 | Env var | Default | |
 |---|---|---|
-| `CLOUD_DATA_DIR` | `./data/clouds` | Where uploads and conversions are stored |
-| `CLOUD_MAX_POINTS` | `2000000` | Points kept for the viewer |
-| `CLOUD_MAX_UPLOAD_MB` | `20480` | Largest accepted upload |
+| `CLOUD_DATA_DIR` | `./data/clouds` | Uploads and outputs |
+| `CLOUD_MAX_UPLOAD_MB` | `51200` | Largest total upload |
+| `CLOUD_PYTHON` | `.venv-worker/bin/python` | Python for the bag worker |
 
-On Cloud Run the local disk is in-memory and per-instance, so point
-`CLOUD_DATA_DIR` at a mounted Cloud Storage volume for anything beyond testing.
-
-## Supported E57 features
-
-Float (single/double), Integer and ScaledInteger fields (any bit width), constant
-fields, cartesian and spherical coordinates, `cartesianInvalidState` /
-`sphericalInvalidState`, per-scan pose, colour and intensity (normalised with
-`colorLimits` / `intensityLimits` when present), multiple scans per file.
-Embedded 2D images are ignored.
+Cloud Run's local disk is in-memory and per-instance: mount a Cloud Storage
+volume at `CLOUD_DATA_DIR`, and give the service enough CPU/memory (bag mapping
+takes ~8 minutes and ~6 GB RAM for a 28-minute recording).

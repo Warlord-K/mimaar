@@ -22,7 +22,19 @@ import {
   exportToPly,
   exportToXyz
 } from './utils/lidarParser';
-import { listClouds, uploadCloud, loadCloudPoints, UploadedCloud, CloudProgress } from './utils/cloudApi';
+import {
+  listClouds,
+  uploadCloud,
+  loadHierarchy,
+  octreeMetadata,
+  octreeUrl,
+  sourceE57Url,
+  bagFolderFiles,
+  UploadedCloud,
+  CloudProgress
+} from './utils/cloudApi';
+import { OctreeHierarchy } from './utils/octree';
+import { OctreeViewport } from './components/OctreeViewport';
 import { LidarViewport } from './components/LidarViewport';
 import { LidarControlsPanel } from './components/LidarControlsPanel';
 import { LidarAgentChat } from './components/LidarAgentChat';
@@ -91,8 +103,9 @@ export default function App() {
   // Active Tool Mode (navigate | measure | box_crop)
   const [editingMode, setEditingMode] = useState<EditingMode>('navigate');
 
-  // Server-side scans (.e57 uploads converted for the viewer)
+  // Server-side scans (.e57 / databag uploads, streamed as a level-of-detail octree)
   const [uploadedClouds, setUploadedClouds] = useState<UploadedCloud[]>([]);
+  const [streamed, setStreamed] = useState<{ cloud: UploadedCloud; hierarchy: OctreeHierarchy } | null>(null);
   const [importStatus, setImportStatus] = useState<{ label: string; progress?: CloudProgress; error?: string } | null>(null);
 
   const refreshUploadedClouds = () =>
@@ -104,18 +117,24 @@ export default function App() {
     refreshUploadedClouds();
   }, []);
 
-  const showParsedCloud = (parsed: { points: LidarPoint[]; metadata: LidarMetadata }) => {
-    setPoints(parsed.points);
-    setMetadata(parsed.metadata);
-    originalPointsRef.current = parsed.points;
-    resetFilterStateForNewCloud(parsed.metadata);
-    if (parsed.metadata.hasRGB) setRenderSettings(prev => ({ ...prev, colorMode: 'rgb' }));
+  // Back to the in-memory viewer (presets and small local files)
+  const leaveStreamedCloud = () => {
+    if (!streamed) return;
+    setStreamed(null);
+    setRenderSettings(prev => ({ ...prev, pointSize: 3.5, edlStrength: 1.0 }));
   };
 
   const handleLoadUploadedCloud = async (cloud: UploadedCloud) => {
     setImportStatus({ label: `Loading ${cloud.name}` });
     try {
-      showParsedCloud(await loadCloudPoints(cloud));
+      const hierarchy = await loadHierarchy(cloud);
+      const meta = octreeMetadata(cloud, hierarchy);
+      setPoints([]);
+      originalPointsRef.current = [];
+      setMetadata(meta);
+      resetFilterStateForNewCloud(meta);
+      setRenderSettings(prev => ({ ...prev, colorMode: meta.hasRGB ? 'rgb' : 'elevation', pointSize: 2, edlEnabled: true, edlStrength: 0.4 }));
+      setStreamed({ cloud, hierarchy });
       setActivePresetId(`cloud:${cloud.id}`);
       setImportStatus(null);
     } catch (err: any) {
@@ -123,14 +142,25 @@ export default function App() {
     }
   };
 
-  const handleUploadE57 = async (file: File) => {
-    setImportStatus({ label: `Uploading ${file.name}`, progress: { phase: 'uploading', fraction: 0 } });
+  const handleUploadCloud = async (files: File[], name: string) => {
+    setImportStatus({ label: `Uploading ${name}`, progress: { phase: 'uploading', fraction: 0 } });
     try {
-      const cloud = await uploadCloud(file, progress => setImportStatus({ label: file.name, progress }));
+      const cloud = await uploadCloud(files, name, progress => setImportStatus({ label: name, progress }));
       await refreshUploadedClouds();
       await handleLoadUploadedCloud(cloud);
     } catch (err: any) {
-      setImportStatus({ label: file.name, error: err.message || String(err) });
+      setImportStatus({ label: name, error: err.message || String(err) });
+    }
+  };
+
+  // A picked or dropped folder of databags goes to the server; anything else is a single file
+  const handleImportFiles = async (files: File[]) => {
+    const bagFiles = bagFolderFiles(files);
+    if (bagFiles.some(f => /\.bag$/i.test(f.name))) {
+      const folder = files[0].webkitRelativePath?.split('/')[0] || bagFiles[0].name.replace(/\.bag$/i, '');
+      await handleUploadCloud(bagFiles, folder);
+    } else if (files[0]) {
+      await handleImportFile(files[0]);
     }
   };
 
@@ -141,6 +171,7 @@ export default function App() {
       if (cloud) handleLoadUploadedCloud(cloud);
       return;
     }
+    leaveStreamedCloud();
     setActivePresetId(presetId);
     const parsed = generateSampleDataset(presetId);
     setPoints(parsed.points);
@@ -182,9 +213,12 @@ export default function App() {
     const filename = file.name.toLowerCase();
     try {
       if (filename.endsWith('.e57')) {
-        // E57 scans are usually far too large to parse in the browser; convert server-side
-        await handleUploadE57(file);
-      } else if (filename.endsWith('.las') || filename.endsWith('.laz')) {
+        // E57 scans are usually far too large to parse in the browser; process server-side
+        await handleUploadCloud([file], file.name);
+        return;
+      }
+      leaveStreamedCloud();
+      if (filename.endsWith('.las') || filename.endsWith('.laz')) {
         const buffer = await file.arrayBuffer();
         const parsed = parseLasFile(buffer, file.name);
         setPoints(parsed.points);
@@ -280,6 +314,11 @@ export default function App() {
 
   // Export processed cloud to file
   const handleExport = (format: 'las' | 'ply' | 'xyz') => {
+    // Streamed scans live on the server; hand out the full-resolution E57
+    if (streamed) {
+      window.open(sourceE57Url(streamed.cloud), '_blank');
+      return;
+    }
     // Only export currently filtered visible points
     const {
       elevationMin, elevationMax,
@@ -537,7 +576,7 @@ export default function App() {
             editingMode={editingMode}
             onChangeEditingMode={setEditingMode}
             onLoadPreset={handleLoadPreset}
-            onImportFile={handleImportFile}
+            onImportFiles={handleImportFiles}
             onApplyCropToPoints={handleApplyCropToPoints}
             onRemoveOutliers={handleRemoveOutliers}
             onResetFilters={handleResetFilters}
@@ -566,11 +605,14 @@ export default function App() {
                       {importStatus.progress.phase === 'uploading'
                         ? 'Uploading'
                         : importStatus.progress.phase === 'queued'
-                          ? 'Waiting to convert'
-                          : 'Converting on server'}
+                          ? 'Waiting to process'
+                          : 'Processing on server'}
                     </span>
                     <span>{Math.round(importStatus.progress.fraction * 100)}%</span>
                   </div>
+                  {importStatus.progress.detail && (
+                    <div className="mt-0.5 text-[10px] text-gray-500 truncate">{importStatus.progress.detail}</div>
+                  )}
                   <div className="mt-1 h-1 bg-[#2a2d3d] rounded overflow-hidden">
                     <div
                       className="h-full bg-amber-500 transition-all"
@@ -583,13 +625,24 @@ export default function App() {
               )}
             </div>
           )}
-          <LidarViewport
-            points={points}
-            metadata={metadata}
-            filterState={filterState}
-            renderSettings={renderSettings}
-            editingMode={editingMode}
-          />
+          {streamed ? (
+            <OctreeViewport
+              hierarchy={streamed.hierarchy}
+              binUrl={octreeUrl(streamed.cloud)}
+              metadata={metadata}
+              filterState={filterState}
+              renderSettings={renderSettings}
+              editingMode={editingMode}
+            />
+          ) : (
+            <LidarViewport
+              points={points}
+              metadata={metadata}
+              filterState={filterState}
+              renderSettings={renderSettings}
+              editingMode={editingMode}
+            />
+          )}
         </main>
 
         {/* Right Pane: LLM Agentic Chat (360px) */}
