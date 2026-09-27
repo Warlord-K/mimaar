@@ -20,6 +20,8 @@ import { LidarViewport } from './components/LidarViewport';
 import { LidarControlsPanel } from './components/LidarControlsPanel';
 import { LidarAgentChat } from './components/LidarAgentChat';
 import { PhotorealStudio } from './components/PhotorealStudio';
+import { PhotorealStage } from './components/PhotorealStage';
+import { usePhotoreal } from './hooks/usePhotoreal';
 import { ViewportCaptureFn } from './types/photoreal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Download, SlidersHorizontal, Sparkles, Upload } from 'lucide-react';
@@ -99,6 +101,13 @@ export default function App() {
   const captureRef = useRef<ViewportCaptureFn | null>(null);
   const photorealSceneHint =
     metadata.format === 'SYNTHETIC' ? SAMPLE_PRESETS.find(p => p.id === activePresetId)?.description ?? '' : '';
+  const photoreal = usePhotoreal({
+    captureRef,
+    metadata,
+    filterState,
+    renderSettings,
+    defaultScene: photorealSceneHint
+  });
 
   const handleLoadPreset = (presetId: string) => {
     setActivePresetId(presetId);
@@ -375,7 +384,11 @@ export default function App() {
   const chat = (
     <Tabs
       value={rightPane}
-      onValueChange={v => setRightPane(v as 'agent' | 'photoreal')}
+      onValueChange={v => {
+        const pane = v as 'agent' | 'photoreal';
+        setRightPane(pane);
+        if (pane === 'photoreal' && photoreal.shots.length > 0) photoreal.setStageOpen(true);
+      }}
       className="flex h-full min-h-0 flex-col gap-0"
     >
       <div className="border-b px-3 py-2.5">
@@ -393,13 +406,7 @@ export default function App() {
         />
       </TabsContent>
       <TabsContent value="photoreal" forceMount className="min-h-0 flex-1 data-[state=inactive]:hidden">
-        <PhotorealStudio
-          captureRef={captureRef}
-          metadata={metadata}
-          filterState={filterState}
-          renderSettings={renderSettings}
-          defaultScene={photorealSceneHint}
-        />
+        <PhotorealStudio photoreal={photoreal} />
       </TabsContent>
     </Tabs>
   );
@@ -521,6 +528,7 @@ export default function App() {
             onChangeEditingMode={setEditingMode}
             captureRef={captureRef}
           />
+          <PhotorealStage photoreal={photoreal} />
           {isDragging && (
             <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-primary/5 text-sm font-medium text-primary">
               Drop a .las, .ply or .xyz file
