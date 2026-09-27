@@ -8,6 +8,7 @@ import {
   MeasurementResult,
   EditingMode
 } from '../types/lidar';
+import { ViewportCaptureFn } from '../types/photoreal';
 import { sampleColormap, getClassificationColor } from '../utils/colormaps';
 import { Focus, Move3d, Ruler, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -23,6 +24,8 @@ interface LidarViewportProps {
   onChangeEditingMode: (mode: EditingMode) => void;
   onUpdateCropBox?: (min: [number, number, number], max: [number, number, number]) => void;
   onMeasurementChange?: (result: MeasurementResult | null) => void;
+  /** Filled with a function that captures the current view (used by Photoreal Studio). */
+  captureRef?: React.MutableRefObject<ViewportCaptureFn | null>;
 }
 
 export const LidarViewport: React.FC<LidarViewportProps> = ({
@@ -33,7 +36,8 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
   editingMode,
   onChangeEditingMode,
   onUpdateCropBox,
-  onMeasurementChange
+  onMeasurementChange,
+  captureRef
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -150,6 +154,37 @@ export const LidarViewport: React.FC<LidarViewportProps> = ({
       renderer.dispose();
     };
   }, []);
+
+  // Expose a capture function: renders one frame without helpers (grid, ROI box, ruler) and grabs it as PNG
+  useEffect(() => {
+    if (!captureRef) return;
+    captureRef.current = (maxSide = 1536) => {
+      const renderer = rendererRef.current;
+      const scene = sceneRef.current;
+      const camera = cameraRef.current;
+      if (!renderer || !scene || !camera) return null;
+
+      const helpers = [scene.getObjectByName('lidar_grid'), cropBoxMeshRef.current, measurementLineRef.current]
+        .filter((h): h is THREE.Object3D => !!h);
+      const wasVisible = helpers.map(h => h.visible);
+      helpers.forEach(h => { h.visible = false; });
+      renderer.render(scene, camera);
+
+      const src = renderer.domElement;
+      const scale = Math.min(1, maxSide / Math.max(src.width, src.height));
+      const out = document.createElement('canvas');
+      out.width = Math.round(src.width * scale);
+      out.height = Math.round(src.height * scale);
+      out.getContext('2d')?.drawImage(src, 0, 0, out.width, out.height);
+
+      helpers.forEach((h, i) => { h.visible = wasVisible[i]; });
+      renderer.render(scene, camera);
+      return { dataUrl: out.toDataURL('image/png'), width: out.width, height: out.height };
+    };
+    return () => {
+      captureRef.current = null;
+    };
+  }, [captureRef]);
 
   // Update Background Color
   useEffect(() => {
