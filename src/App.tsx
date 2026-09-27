@@ -25,6 +25,8 @@ import {
 import { LidarViewport } from './components/LidarViewport';
 import { LidarControlsPanel } from './components/LidarControlsPanel';
 import { LidarAgentChat } from './components/LidarAgentChat';
+import { PhotorealStudio } from './components/PhotorealStudio';
+import { ViewportCaptureFn } from './types/photoreal';
 import {
   Layers,
   Ruler,
@@ -89,6 +91,12 @@ export default function App() {
 
   // Active Tool Mode (navigate | measure | box_crop)
   const [editingMode, setEditingMode] = useState<EditingMode>('navigate');
+
+  // Right pane (Copilot chat | Photoreal Studio) and the viewport capture hook used by Photoreal Studio
+  const [rightPane, setRightPane] = useState<'copilot' | 'photoreal'>('copilot');
+  const captureRef = useRef<ViewportCaptureFn | null>(null);
+  const photorealSceneHint =
+    metadata.format === 'SYNTHETIC' ? SAMPLE_PRESETS.find(p => p.id === activePresetId)?.description ?? '' : '';
 
   // Load Preset Dataset
   const handleLoadPreset = (presetId: string) => {
@@ -443,6 +451,19 @@ export default function App() {
         {/* Right: Actions (Reset, Export) */}
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setRightPane('photoreal')}
+            title="Turn the current view into a photorealistic photo and video"
+            className={`flex items-center gap-1 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors ${
+              rightPane === 'photoreal'
+                ? 'bg-[#e87d0d]/15 border-[#e87d0d]/50 text-[#ffb366]'
+                : 'bg-[#252838] hover:bg-[#31354a] border-[#373b52] text-gray-300'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Photoreal</span>
+          </button>
+
+          <button
             onClick={handleResetFilters}
             title="Reset all filters and restore full cloud"
             className="flex items-center gap-1 px-2.5 py-1.5 bg-[#252838] hover:bg-[#31354a] border border-[#373b52] text-gray-300 rounded-lg text-xs font-medium transition-colors"
@@ -490,18 +511,43 @@ export default function App() {
             filterState={filterState}
             renderSettings={renderSettings}
             editingMode={editingMode}
+            captureRef={captureRef}
           />
         </main>
 
-        {/* Right Pane: LLM Agentic Chat (360px) */}
-        <aside className="w-96 shrink-0 h-full overflow-hidden">
-          <LidarAgentChat
-            metadata={metadata}
-            filterState={filterState}
-            renderSettings={renderSettings}
-            onExecuteAgentAction={handleExecuteAgentAction}
-            onResetFilters={handleResetFilters}
-          />
+        {/* Right Pane: LLM Agentic Chat | Photoreal Studio (384px); both stay mounted to keep their state */}
+        <aside className="w-96 shrink-0 h-full overflow-hidden flex flex-col">
+          <div className="flex shrink-0 bg-[#1a1c26] border-l border-b border-[#2d3040] p-1 gap-1 text-xs font-medium">
+            {(['copilot', 'photoreal'] as const).map(pane => (
+              <button
+                key={pane}
+                onClick={() => setRightPane(pane)}
+                className={`flex-1 py-1 rounded transition-colors ${
+                  rightPane === pane ? 'bg-[#2c2f42] text-gray-100' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {pane === 'copilot' ? 'Copilot' : 'Photoreal'}
+              </button>
+            ))}
+          </div>
+          <div className={`flex-1 min-h-0 ${rightPane === 'copilot' ? '' : 'hidden'}`}>
+            <LidarAgentChat
+              metadata={metadata}
+              filterState={filterState}
+              renderSettings={renderSettings}
+              onExecuteAgentAction={handleExecuteAgentAction}
+              onResetFilters={handleResetFilters}
+            />
+          </div>
+          <div className={`flex-1 min-h-0 ${rightPane === 'photoreal' ? '' : 'hidden'}`}>
+            <PhotorealStudio
+              captureRef={captureRef}
+              metadata={metadata}
+              filterState={filterState}
+              renderSettings={renderSettings}
+              defaultScene={photorealSceneHint}
+            />
+          </div>
         </aside>
       </div>
     </div>
