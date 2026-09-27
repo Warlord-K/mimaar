@@ -1,0 +1,7 @@
+{
+  "name": "Blender Cloud 3D Studio",
+  "description": "Professional web-based 3D modeling, Cycles/EEVEE rendering workstation, Python bpy scripting, and AI scene generation directly in your browser.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
